@@ -1,14 +1,18 @@
 from astroquery.jplhorizons import Horizons
 import astropy.units as u
 import matplotlib.pyplot as plt
-from numpy import mean
+import pdb
 
-# Query for NEO ephemerides (The moon)
-neo = Horizons(id='301', location="399", epochs={'start': '2023-01-01', 'stop': '2023-03-01', 'step': '1d'})
+# Query for NEO ephemerides
+distance_dict = {"Mars": 499, "Moon":301}
+body="Mars"
+
+neo = Horizons(id=distance_dict.get(body), location="399", epochs={'start': '2020-01-01', 'stop': '2023-03-01', 'step': '1d'})
 neo_ephem = neo.ephemerides()
 
 # Calculate the distance between NEO and Earth
 distance = neo_ephem['delta'].to(u.km)# - earth_ephem['delta'].to(u.km)
+pdb.set_trace()
 mean_y = distance.mean().value
 # Plot the distance
 fig, ax = plt.subplots()
