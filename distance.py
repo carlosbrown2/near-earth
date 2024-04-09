@@ -9,7 +9,8 @@ from tqdm import tqdm
 from numpy import argmin
 
 df = pd.read_csv('sbdb_query_results.csv')
-spkids = df.loc[:, 'spkid'].to_list()
+spkids = df.loc[df.neo == 'Y', 'spkid'].to_list()
+print(f'There are {len(spkids)} NEOs to process')
 
 # Query for ephemerides
 distance_dict = {"Mars": 499, "Moon":301, 'Bus':'1000010'}
@@ -37,10 +38,11 @@ for spkid in tqdm(spkids):
             continue
 
     # Calculate the distance between NEO and Earth
-    distance = neo_ephem['delta'].to(u.au)# - earth_ephem['delta'].to(u.km)
+    distance = neo_ephem['delta'].to(u.km)# - earth_ephem['delta'].to(u.km)
     mean_y = distance.mean().value
     min_dist = distance.min()
-    if min_dist.value <= 1.3:
+    # object comes within one earth radius of observer
+    if min_dist.value <= 6378.136:
         idx = argmin(distance)
         t = neo_ephem['datetime_jd'][idx]
         neos.append({'spkid':spkid, 'distance': min_dist.value, 'time': t})
