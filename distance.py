@@ -17,7 +17,8 @@ distance_dict = {"Mars": 499, "Moon":301, 'Bus':'1000010'}
 body="Bus"
 
 # Dates
-epoch_length = 365
+years = 1
+epoch_length = 365 * years
 today = date.today().strftime('%Y-%m-%d')
 future_date = (date.today() + timedelta(days=epoch_length)).strftime('%Y-%m-%d')
 
@@ -30,7 +31,13 @@ for spkid in tqdm(spkids):
         print('error thrown, trying record number...')
         records = str(e).split('\n')
         pattern = '^[^\d]*(\d+)'
-        matches = re.findall(pattern, records[-2])
+        if len(records) >= 3 and records[-1] == '':
+            matches = re.findall(pattern, records[-2])
+        elif len(records) == 2 and records[-1] != '':
+            try:
+                matches = re.findall(pattern, records[-1])
+            except:
+                continue
         try:
             neo = Horizons(id=matches[0], location="399", id_type=None, epochs={'start': today, 'stop': future_date, 'step': '1d'})
             neo_ephem = neo.ephemerides()

@@ -128,3 +128,4 @@ dmypy.json
 # Pyre type checker
 .pyre/
 sbdb_query_results.csv
+neos.csv
