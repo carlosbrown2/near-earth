@@ -9,9 +9,7 @@ from tqdm import tqdm
 from numpy import argmin
 from typing import List, Dict
 
-df = pd.read_csv('sbdb_query_results.csv')
-spkids = df.loc[df.neo == 'Y', 'spkid'].to_list()
-print(f'There are {len(spkids)} NEOs to process')
+
 
 # Dates
 years = 1
@@ -62,10 +60,16 @@ class Distance:
                 idx = argmin(distance)
                 t = neo_ephem['datetime_jd'][idx]
                 bad_neos.append({'spkid':spkid, 'distance': min_dist.value, 'time': t})
+        return bad_neos
 
-
-df_out = pd.DataFrame(neos)
-df_out.to_csv('neos.csv', index=False)
+if __name__ == '__main__':
+    df = pd.read_csv('sbdb_query_results.csv')
+    spkids = df.loc[df.neo == 'Y', 'spkid'].to_list()
+    print(f'There are {len(spkids)} NEOs to process')
+    dist = Distance(spkids, "399", 730)
+    neos = dist.check_approaches()
+    df_out = pd.DataFrame(neos)
+    df_out.to_csv('neos.csv', index=False)
 
 
 
