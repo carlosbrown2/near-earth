@@ -52,8 +52,7 @@ class Distance:
         for spkid in tqdm(self.spkids):
             neo_ephem = self.calculate_ephemerid(spkid)
                 # Calculate the distance between NEO and Earth
-            distance = neo_ephem['delta'].to(u.km)# - earth_ephem['delta'].to(u.km)
-            mean_y = distance.mean().value
+            distance = neo_ephem['delta'].to(u.km) - neo_ephem['r_3sigma']# - earth_ephem['delta'].to(u.km)
             min_dist = distance.min()
             # object comes within one earth radius of observer
             if min_dist.value <= 6378.136:
