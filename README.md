@@ -1,2 +1,2 @@
 # near-earth
-Near Earth Object calculations
+Near Earth Objects and Spectroscopy
