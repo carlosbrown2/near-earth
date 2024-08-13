@@ -25,7 +25,7 @@ class Distance:
         self.today = date.today().strftime('%Y-%m-%d')
         self.future_date = (date.today() + timedelta(days=epoch_length)).strftime('%Y-%m-%d')    
 
-    def calculate_ephemerid(self, spkid):
+    def calculate_ephemeris(self, spkid):
         neo = Horizons(id=spkid, location=self.location, id_type='designation', epochs={'start': self.today, 'stop': self.future_date, 'step': '1d'})
         try:
             neo_ephem = neo.ephemerides()
@@ -35,7 +35,7 @@ class Distance:
             pattern = r'^[^\d]*(\d+)'
             if len(records) >= 3 and records[-1] == '':
                 matches = re.findall(pattern, records[-2])
-            elif len(records) == 2 and records[-1] != '':
+            elif len(records) == 2 and records[-1] != '': 
                 try:
                     matches = re.findall(pattern, records[-1])
                 except:
