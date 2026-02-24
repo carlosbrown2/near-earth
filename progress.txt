@@ -3,6 +3,7 @@ Project: Asteroid Mining Prospector
 Started: 2026-02-23
 
 ## Codebase Patterns
+- Pipeline CLI: `python -m prospector --stages ingest spectral scoring output --data-dir data/ --mode earth_return`. Use `run_pipeline()` programmatically.
 - Hypothesis property tests: Use `deadline=None` for compute-heavy tests (EVOI). Use paired RNG seeds `np.random.default_rng(seed)` for fair monotonicity comparisons. Class-level `_config = load_config()` avoids per-example YAML loading.
 - EVOI computation is expensive (~2.4s per call at n_samples=30). Full `compute_evoi` should be tested with `deadline=None` and modest `max_examples`. Direct EVOI comparison (e.g., EVOI_vnir >= EVOI_vis) is unreliable at low n_samples due to MC noise — test mathematical prerequisites instead.
 - Literal types: `ScoringMode` and `ObservationType` defined in `prospector/schemas.py` — use for all mode/observation parameters
@@ -708,4 +709,16 @@ Started: 2026-02-23
   - JWST water data is sparse (~4 asteroids now, 30+ in Cycle 2+) — ingestion handles curated CSV/JSON, not bulk catalogs
   - Column alias resolution pattern (`_resolve_columns` + `_COLUMN_ALIASES`) is reusable across ingest modules
   - Non-detections (detection=false) should be stored for completeness — negative results are scientifically valuable
+---
+
+## 2026-02-24 — near-earth-i8x: Pipeline runner CLI entry point
+- Created `prospector/pipeline.py` — full orchestrator with data file auto-discovery and stage runners (ingest, spectral, scoring, output)
+- Created `prospector/__main__.py` — thin CLI wrapper enabling `python -m prospector`
+- CLI flags: `--data-dir`, `--db-path`, `--mode`, `--n-samples`, `--output`, `--stages`, `--list-data`, `-v`
+- Files changed: `prospector/pipeline.py` (new), `prospector/__main__.py` (new), `tests/test_pipeline.py` (new, 16 tests)
+- **Learnings for future iterations:**
+  - `_INGEST_SOURCES` dict maps source names to subdirs + glob patterns for auto-discovery
+  - `run_pipeline()` returns `dict[str, dict[str, int]]` — stage name → result counts
+  - Lazy imports inside stage runners avoid importing all modules when running partial stages
+  - mypy needs explicit `str()` cast for dict values used in `Path /` operations
 ---
