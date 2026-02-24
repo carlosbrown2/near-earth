@@ -78,6 +78,23 @@ Started: 2026-02-23
 - CNN grid: 0.45-2.45μm at 5nm (401 channels); resample via scipy.interpolate.interp1d
 - PyTorch is optional dep — `_check_dependencies()` pattern for graceful fallback
 - cnn_mineral table: ol/opx/cpx_pct, fa/fs/wo_mol_pct, uncertainties, classical_agreement, method
+- PGM convergence: `from prospector.spectral.pgm_convergence import assess_asteroid, assess_all`
+- assess_asteroid returns dict with pgm_tier, pgm_confidence, individual signals; None if not candidate
+- PGM tiers: Tier 1 (M+featureless+iron+radar), Tier 2 (M+featureless+iron), Tier 3 (M only), Tier 4 (speculative X), Tier S (S-type OC metal)
+- pgm_convergence table: tier, confidence, m_type_prob, featureless_nir, no_silicate_bands, iron_analog_match, s_type_metal, signal_count
+- Confidence config: `scoring/confidence_config.yaml` — 8-factor weighted geometric mean, floor=0.05
+- Confidence factors: wavelength_coverage(0.25), taxonomy_entropy(0.20), snr(0.12), concordance(0.12), method_agreement(0.10), n_observations(0.08), supplementary_data(0.08), pgm_convergence(0.05)
+- Lambert solver: `from prospector.ephemeris.lambert import solve_lambert, search_windows, search_all, prefilter`
+- solve_lambert(r1, r2, tof, mu) returns (v1, v2) or None; uses bisection on universal variable
+- search_windows(asteroid_id, conn, start_jd, horizon_years) returns list[TransferWindow] sorted by dv_total
+- prefilter(moid, incl, a) gates which asteroids enter the expensive grid search
+- EVOI: `from prospector.scoring.evoi import compute_evoi, rank_all, compute_evoi_for_asteroid`
+- compute_evoi returns dict with evoi_vnir, evoi_vis, evoi_radar, evoi_albedo, best_observation
+- rank_all(conn, neo_only=True) returns list[EVOIResult] sorted by best_evoi descending
+- Observation models: peaked posterior (VNIR), complex posterior (vis), Bayesian update (radar/albedo)
+- Output: `from prospector.output import generate_ranked_csv, generate_ranked_dicts`
+- generate_ranked_csv(conn, path, mode, limit) writes FR-8 CSV; returns count
+- generate_ranked_dicts(conn, mode, limit) returns list[dict] for programmatic access
 
 ---
 
@@ -440,4 +457,98 @@ Started: 2026-02-23
   - Agreement thresholds: 10pp (good), 20pp (fair) based on ~10% Dunn calibration RMSE
   - predict_all loads model once for batch efficiency via _model parameter passthrough
   - confidence-formula bead (near-earth-f4d) is now unblocked by this bead
+---
+
+## 2026-02-23 — near-earth-fd2: pgm-convergence
+- Created `prospector/spectral/pgm_convergence.py`: Stage 5 multi-signal PGM candidate identification
+- Key functions: `assess_nir_slope()`, `check_silicate_bands()`, `check_iron_analog()`, `assess_asteroid()`, `assess_all()`
+- 7 signals assessed: M-type prob, featureless NIR, silicate band absence, iron analog match, radar albedo, beaming eta, S-type metal fraction
+- 5 confidence tiers per PRD §4 Stage 5: Tier 1 (High, 70-90%), Tier 2 (Medium, 40-60%), Tier 3 (Low, 20-30%), Tier 4 (Speculative, <10%), Tier S (S-type metal)
+- Added `pgm_convergence` table to `prospector/db.py` schema (14 columns)
+- Updated EXPECTED_TABLES in `tests/test_db.py`
+- 49 tests in `tests/test_spectral_pgm_convergence.py`: prob helpers, NIR slope, silicate bands, iron analogs, tier assignment, DB integration, batch, physical sanity
+- **Learnings for future iterations:**
+  - `from prospector.spectral.pgm_convergence import assess_asteroid, assess_all`
+  - `assess_asteroid(id, conn, analogs=optional)` returns dict with tier + signals or None if not a PGM candidate
+  - Featureless NIR: linear fit residual std < 3% of mean reflectance AND positive slope
+  - Iron analog check uses `find_analogs()` from curve_match — can be slow; pass pre-computed analogs to avoid
+  - Tier S pathway: S/Q-type with S(IV) Gaffey subtype OR CNN showing <95% silicate total → OC metal ~10-20%
+  - Early exit optimization: skip asteroids with metallic_prob < 0.05 AND s_prob < 0.5
+  - Radar albedo not yet ingested (always NULL) — Tier 1 requires radar, so currently max is Tier 2
+  - PGM convergence table stores individual signal values for audit trail
+---
+
+## 2026-02-23 — near-earth-f4d: confidence-formula
+- Created `scoring/confidence_config.yaml`: 8-factor Bayesian posterior confidence scoring design
+- Formula: weighted geometric mean with floor=0.05 preventing zero-collapse
+- 8 factors with weights summing to 1.0:
+  1. Wavelength coverage (0.25) — dominant factor, lookup table for 8 coverage levels
+  2. Taxonomy entropy (0.20) — Shannon entropy of 17-class prob vector, normalized by H_max=log2(17)
+  3. SNR (0.12) — min(1, SNR/50), saturates at SNR=50
+  4. Taxonomy-analog concordance (0.12) — full concordance map for all 17 Mahlke classes
+  5. Method agreement (0.10) — classical vs CNN ol/(ol+opx) comparison
+  6. N observations (0.08) — min(1, N/3), saturates at 3 independent observations
+  7. Supplementary data (0.08) — weighted count of albedo/radar/thermal/polarimetry/lightcurve
+  8. PGM convergence (0.05) — Stage 5 signal_count/max_signals, neutral for non-PGM
+- Worked examples: Itokawa (~0.82) > Bennu (~0.81) > Eros (~0.77) > Psyche (~0.68) > Gaia-only (~0.31) > Uncharacterized (~0.10)
+- 38 tests in `tests/test_scoring_confidence.py`: structure, weights, normalization, concordance, worked examples, formula properties, defaults
+- **Learnings for future iterations:**
+  - Confidence config is at `scoring/confidence_config.yaml` — load with yaml.safe_load()
+  - Scorer implementation should: load config → compute each factor → geometric mean with floor
+  - For non-PGM asteroids, pgm_convergence defaults to 0.5 (neutral)
+  - Concordance map mirrors TAXONOMY_METEORITE_MAP from curve_match.py
+  - `default_when_missing` field on each factor handles graceful degradation
+---
+
+## 2026-02-23 — near-earth-rvz: lambert-solver
+- Created `prospector/ephemeris/lambert.py`: Lambert transfer solver + approach window search
+- Key functions: `solve_lambert()`, `search_windows()`, `search_all()`, `departure_dv()`, `arrival_dv()`, `prefilter()`
+- Helpers: `stumpff_c()`, `stumpff_s()`, `solve_kepler()`, `keplerian_to_cartesian()`, `earth_state()`, `asteroid_state()`
+- Universal variable Lambert solver with bisection root-finding (more robust than Newton-Raphson)
+- Stumpff functions with overflow protection for large negative z (hyperbolic orbits)
+- Departure Δv: Oberth manoeuvre from LEO (parking orbit at 400 km altitude)
+- Arrival Δv: hyperbolic excess velocity magnitude (small body, no orbit insertion)
+- Grid search: launch dates × TOF combinations, keeps top-N windows by total Δv
+- Prefilter: MOID < 0.15 AU, inclination < 40°, semi-major axis < 4.5 AU
+- TransferWindow dataclass: launch_jd, arrival_jd, tof_days, dv_departure/arrival/total_km_s
+- 47 tests in `tests/test_ephemeris_lambert.py`: Stumpff, Kepler, keplerian↔cartesian, Earth state, Lambert solver, delta-v, prefilter, synodic period, search windows, physical sanity
+- **Learnings for future iterations:**
+  - Near-180° Lambert transfers are degenerate (transfer plane undefined) — avoid in tests
+  - Bisection root-finding is more robust than Newton-Raphson for Lambert's universal variable equation
+  - Stumpff functions: cosh/sinh overflow for z < -500 — return np.inf as sentinel
+  - Earth J2000 elements hardcoded for two-body propagation (sufficient for transfer window search)
+  - `from prospector.ephemeris.lambert import solve_lambert, search_windows, search_all, prefilter`
+  - Synodic period: |1/(1 - 1/P_ast)| years — search horizon should span at least one synodic period
+  - `search_all(conn)` prefilters from orbits table, then grid-searches each candidate
+---
+
+## 2026-02-23 — near-earth-u5d: evoi
+- Created `prospector/scoring/evoi.py`: Expected Value of Information ranking
+- Key functions: `compute_evoi()`, `compute_evoi_for_asteroid()`, `rank_all()`
+- Helpers: `_make_peaked_posterior()`, `_make_complex_posterior()`, `_make_radar_posterior()`, `_make_albedo_posterior()`
+- Preposterior analysis: current σ_prior − E[σ_post | observation]
+- 4 observation models: VNIR spectroscopy (peaked class), visible (complex-level), radar (metallic binary), albedo (X-degeneracy)
+- EVOIResult dataclass with per-type EVOI values and best_observation recommendation
+- rank_all targets uncharacterised NEOs (no spectral taxonomy) — prioritises Granvik-prior-only asteroids
+- 46 tests in `tests/test_scoring_evoi.py`: posterior construction, score distribution, EVOI computation, DB integration, physical sanity
+- **Learnings for future iterations:**
+  - MC statistical tests need large n_samples (500+) and coefficient of variation, not raw std
+  - EVOI max(0, ...) clamp prevents negative values from MC noise
+  - Peaked prior EVOI near zero is expected — already well-characterised asteroids don't benefit from more observations
+  - `from prospector.scoring.evoi import compute_evoi, rank_all, compute_evoi_for_asteroid`
+---
+
+## 2026-02-23 — near-earth-bv8: output-csv
+- Created `prospector/output.py`: FR-8 ranked candidate list output
+- Key functions: `generate_ranked_csv()`, `generate_ranked_dicts()`, `_fetch_candidates()`
+- 30+ CSV columns: rank, asteroid identity, orbital elements, taxonomy, analog match, classical composition, CNN composition, PGM tier, all scoring components, transfer windows
+- `_fetch_candidates()` joins scores + asteroids + orbits + physical_properties + taxonomy + band_analysis + cnn_mineral + pgm_convergence
+- Optional slow features: `include_analogs=True` (calls curve_match.find_analogs), `include_windows=True` (calls lambert.search_windows)
+- `generate_ranked_dicts()` provides programmatic access without file I/O
+- 32 tests in `tests/test_output.py`: format helpers, fetch candidates, CSV generation, ranked dicts, FR-8 validation
+- **Learnings for future iterations:**
+  - `from prospector.output import generate_ranked_csv, generate_ranked_dicts`
+  - CSV uses csv.DictWriter with explicit COLUMNS list for stable column order
+  - _fmt and _fmt_sci helpers handle None → empty string gracefully
+  - Analog and window computation are opt-in (slow for large datasets)
 ---
