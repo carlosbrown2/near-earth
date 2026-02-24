@@ -4,6 +4,7 @@ Started: 2026-02-23
 
 ## Codebase Patterns
 - Pipeline CLI: `python -m prospector --stages ingest spectral scoring output --data-dir data/ --mode earth_return`. Use `run_pipeline()` programmatically.
+- FastAPI testing: Create `sqlite3.connect(":memory:", check_same_thread=False)` for test DB. Override `get_db` dependency: `app.dependency_overrides[get_db] = lambda: conn`. Use `TestClient(app)` from `fastapi.testclient`.
 - Hypothesis property tests: Use `deadline=None` for compute-heavy tests (EVOI). Use paired RNG seeds `np.random.default_rng(seed)` for fair monotonicity comparisons. Class-level `_config = load_config()` avoids per-example YAML loading.
 - EVOI computation is expensive (~2.4s per call at n_samples=30). Full `compute_evoi` should be tested with `deadline=None` and modest `max_examples`. Direct EVOI comparison (e.g., EVOI_vnir >= EVOI_vis) is unreliable at low n_samples due to MC noise — test mathematical prerequisites instead.
 - Literal types: `ScoringMode` and `ObservationType` defined in `prospector/schemas.py` — use for all mode/observation parameters
@@ -721,4 +722,18 @@ Started: 2026-02-23
   - `run_pipeline()` returns `dict[str, dict[str, int]]` — stage name → result counts
   - Lazy imports inside stage runners avoid importing all modules when running partial stages
   - mypy needs explicit `str()` cast for dict values used in `Path /` operations
+---
+
+## 2026-02-24 — near-earth-e39: FastAPI app skeleton + auth middleware
+- Created `prospector/api/` package: `app.py`, `auth.py`, `models.py`
+- FastAPI app factory with async lifespan for DB connection management
+- API key auth via `X-API-Key` header or `api_key` query param, loaded from `PROSPECTOR_API_KEYS` env var
+- Health endpoint at `/health` (unauthenticated), placeholder `/v1/status` (authenticated)
+- Added `fastapi>=0.110` and `uvicorn[standard]>=0.27` to `pyproject.toml` optional deps (`api` extra)
+- Files: `prospector/api/{__init__,app,auth,models}.py` (new), `tests/test_api.py` (new, 19 tests), `pyproject.toml` (modified)
+- **Learnings for future iterations:**
+  - SQLite + FastAPI TestClient requires `check_same_thread=False` — TestClient runs requests in a worker thread
+  - Use `dependency_overrides[get_db]` to inject test database connections
+  - Lifespan context manager handles DB open/close; re-opens with `check_same_thread=False` for async compat
+  - `PRAGMA query_only = ON` enforces read-only at the API layer
 ---
