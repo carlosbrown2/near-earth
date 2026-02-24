@@ -126,6 +126,24 @@ CREATE TABLE IF NOT EXISTS cnn_mineral (
     method              TEXT DEFAULT 'korda2023'  -- model identifier
 );
 
+-- PGM convergence results (Stage 5 multi-signal identification)
+CREATE TABLE IF NOT EXISTS pgm_convergence (
+    asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    pgm_tier          TEXT,               -- 'Tier 1' through 'Tier 4', 'Tier S'
+    pgm_confidence    REAL,               -- 0.0-1.0 overall PGM confidence
+    m_type_prob       REAL,               -- M-class probability from taxonomy
+    featureless_nir   BOOLEAN,            -- featureless NIR with reddish slope
+    no_silicate_bands BOOLEAN,            -- absence of 1/2 um absorption bands
+    iron_analog_match BOOLEAN,            -- iron meteorite best analog
+    iron_analog_wmse  REAL,               -- best iron analog WMSE
+    radar_albedo      REAL,               -- if available (NULL otherwise)
+    beaming_eta       REAL,               -- NEATM beaming parameter
+    s_type_metal      BOOLEAN,            -- S-type with high metal fraction
+    metal_fraction_pct REAL,              -- estimated metal fraction %
+    signal_count      INTEGER,            -- number of positive signals
+    notes             TEXT                -- textual summary
+);
+
 -- Scoring output
 CREATE TABLE IF NOT EXISTS scores (
     asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),

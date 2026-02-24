@@ -14,6 +14,7 @@ EXPECTED_TABLES = sorted([
     "cnn_mineral",
     "lab_spectra",
     "orbits",
+    "pgm_convergence",
     "physical_properties",
     "scores",
     "spectra",
