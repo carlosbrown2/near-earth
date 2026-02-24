@@ -55,6 +55,7 @@ Started: 2026-02-23
 - Recoverability factors: Phase 1 defaults in scorer.py; Phase 2 will load from YAML config
 - Gaia DR3 ingest: `from prospector.ingest.gaia import ingest_gaia_file, ingest_gaia_tap` — TAP query or local CSV/VOTable
 - Gaia table `gaiadr3.sso_reflectance_spectrum`: one row per (source_id, wavelength) — 16 bands per asteroid, wavelength in nm
+- SMASS ingest: `from prospector.ingest.smass import ingest_smass_dir, ingest_smass_file` — reuses MITHNEOS reader
 - Gaia cross-match: `number_mp` → IAU number (preferred), `denomination` → entity_resolver (fallback), skip `Gaia-DR3SSO-*` internal IDs
 - Gaia quality flags: 0=good, 1=poor, 2=compromised — `skip_compromised=True` filters all-compromised spectra
 
@@ -298,4 +299,19 @@ Started: 2026-02-23
   - Quality flags (0/1/2) allow selective filtering — skip_compromised=True is the safe default
   - astroquery.gaia: use `Gaia.launch_job_async()` for the full ~968K row dataset
   - SMASS ingest can follow same pattern: load → group → resolve → FK check → BLOB store
+---
+
+## 2026-02-23 — near-earth-q2y: smass-ingest
+- Created `prospector/ingest/smass.py`: SMASS II visible spectra → spectra table
+- Key functions: `ingest_smass_file()` (single file), `ingest_smass_dir()` (batch)
+- Reuses `_read_spectrum_file` from MITHNEOS (same ASCII format: wl, refl, optional unc)
+- Reuses `parse_mithneos_filename` from entity_resolver (PRD confirms "similar naming convention")
+- Stores as numpy BLOBs with survey='SMASS', wl_min≈0.44μm, wl_max≈0.92μm
+- FK validation via preloaded known_ids set (same pattern as all other ingest modules)
+- 15 tests in `tests/test_ingest_smass.py`: single file, batch, BLOB roundtrip, FK integrity, MITHNEOS coexistence
+- **Learnings for future iterations:**
+  - SMASS file format is identical to MITHNEOS — direct reuse of `_read_spectrum_file` works
+  - `parse_mithneos_filename` is survey-agnostic (just parses `aXXXXXX.spNN.txt` pattern) — could be renamed
+  - SMASS is already in `GROUND_BASED_SURVEYS` set in preprocessing.py — telluric masking will apply
+  - `from prospector.ingest.smass import ingest_smass_dir, ingest_smass_file`
 ---
