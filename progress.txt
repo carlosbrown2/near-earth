@@ -47,6 +47,8 @@ Started: 2026-02-23
 - Gaffey subtypes: S(I)-S(VII) zone classification; only S(IV) gets Dunn calibration (dunn2010), others get gaffey1993_zone
 - Telluric NaN gaps handled naturally by polynomial fitting — find_band_center interpolates through gaps
 - Temperature correction: T ≈ 280/sqrt(a) K; band centers shift by ~5.7e-5 (BI) and ~1.0e-4 (BII) um/K relative to 300K lab
+- Granvik prior: `from prospector.scoring.granvik_prior import taxonomy_prior` — takes (a, e, i_deg), returns 17-element numpy array
+- Granvik prior output is BLOB-compatible with taxonomy.prob_vector — scorer can treat both uniformly
 
 ---
 
@@ -227,4 +229,22 @@ Started: 2026-02-23
   - PGM Kargel→Cannon correction: ~60% reduction in estimated PGM grades for M-type
   - X-type is degenerate without albedo — always use wide priors for X and Z classes
   - S-type PGM requires separate metal fraction lookup for extraction cost modeling
+---
+
+## 2026-02-23 — near-earth-0s8: granvik-prior
+- Created `prospector/scoring/granvik_prior.py`: Granvik 2018 debiased population prior
+- Key functions: `source_region_probabilities(a, e, i_deg)`, `taxonomy_prior(a, e, i_deg)`, `taxonomy_prior_dict(a, e, i_deg)`
+- 7 source regions: ν6, 3:1, 5:2, 2:1, Hungaria, Phocaea, JFC
+- Gaussian proximity kernels in (a,e,i) space weighted by Granvik 2018 steady-state delivery rates
+- Tisserand parameter boost for JFC identification (2 < T_J < 3)
+- Source → taxonomy mapping from DeMeo & Carry (2014) compositional gradient
+- Returns 17-element Mahlke probability vector (same format as taxonomy.prob_vector BLOB)
+- 40 tests in `tests/test_scoring_granvik_prior.py`: Tisserand, source regions, taxonomy vectors, known NEOs, BLOB interop
+- **Learnings for future iterations:**
+  - `taxonomy_prior(a, e, i_deg)` returns numpy float64 array compatible with taxonomy.prob_vector BLOB format
+  - Scorer should call `taxonomy_prior()` for each asteroid — no new DB table needed
+  - Tisserand for JFC: use 67P-like orbit (a≈3.46, e≈0.64) for testing, not Encke (T_J barely above 3)
+  - Source taxonomy vectors are pre-normalised at module load time via `_build_source_vectors()`
+  - Extreme orbits (far from all resonances) fall back to uniform prior over all 7 regions
+  - `from prospector.scoring.granvik_prior import taxonomy_prior, source_region_probabilities`
 ---
