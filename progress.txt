@@ -28,6 +28,9 @@ Started: 2026-02-23
 - Entity resolver: `from prospector.ingest.entity_resolver import resolve` — takes any identifier string + optional conn, returns ResolvedID(asteroid_id, designation, packed, source)
 - MITHNEOS ingest: `from prospector.ingest.mithneos import ingest_mithneos_dir` — takes dirpath + conn, returns spectrum count
 - Spectral ingest pattern: read file → parse filename for identity → resolve to asteroid_id → FK check → store as numpy BLOBs
+- Hapke model: `from prospector.spectral.hapke_model import model_asteroid, forward_model, fit_spectrum`
+- Hapke endmembers: Endmember dataclass with n, k_baseline, bands (Gaussian absorption); default set OLIVINE/PYROXENE/PLAGIOCLASE/TROILITE/FE_NI_METAL
+- Forward model parameter vector: [4 fracs, 5 grain_sizes, 1 smfe] = 10 params; metal frac derived from 1-sum
 - MPC pack/unpack: `pack_designation("1998 SF36")` → `"J98S36F"`, `unpack_designation("J98S36F")` → `"1998 SF36"`
 - Spectral preprocessing: `from prospector.spectral.preprocessing import preprocess_all, preprocess_spectrum`
 - Stage 0 pipeline: resample → normalize (550nm) → mask telluric (ground-based) → estimate SNR → assess quality → update DB
@@ -40,6 +43,11 @@ Started: 2026-02-23
 - classify_all processes only asteroids with normalized spectra not yet in taxonomy table
 - Taxonomy prob_vector: numpy BLOB of 17 floats in MAHLKE_CLASSES order (A,B,C,Ch,D,E,K,L,M,O,P,Q,R,S,V,X,Z)
 - Coverage detection: 'vnir' (vis+NIR), 'vis_only', 'nir_only' based on wl_min/wl_max thresholds
+- LCDB ingest: `from prospector.ingest.lcdb import ingest_lcdb, classify_spin` — takes filepath + conn, returns row count
+- LCDB cross-match: IAU number first, designation fallback (same as NEOWISE pattern)
+- Spin barrier: P < 2.2 hr → monolithic (above spin barrier), P > 6.0 hr + Amp > 0.7 mag → binary suspect
+- Scorer spin modifier: `compute_spin_modifier(is_monolithic, is_binary_suspect)` → 1.15 bonus / 0.80 penalty / 1.0 default
+- score_asteroid() accepts `is_monolithic` and `is_binary_suspect` kwargs; score_all() LEFT JOINs rotation_properties
 - Mock classy in tests: `patch.dict("sys.modules", {"classy": mock_classy})` pattern — avoids tensorflow dependency in test suite
 - Band analysis: `from prospector.spectral.band_analysis import analyze_all, analyze_spectrum`
 - Band analysis eligibility: SILICATE_CLASSES = {S, Q, K, A, L, O, R, V} + normalized spectrum + wl_max >= 2.0 μm
@@ -54,6 +62,8 @@ Started: 2026-02-23
 - score_asteroid returns dict with composite_score, estimated_mass_kg, grade_estimate, target_material, material_contributions
 - Recoverability factors: Phase 1 defaults in scorer.py; Phase 2 will load from YAML config
 - Gaia DR3 ingest: `from prospector.ingest.gaia import ingest_gaia_file, ingest_gaia_tap` — TAP query or local CSV/VOTable
+- Phase curve: `from prospector.spectral.phase_curve import fit_phase_curve, fit_all, h_g1g2_model, geometric_albedo`
+- Phase curve fit_all reads from user-created `mpc_photometry` table (asteroid_id, phase_angle_deg, reduced_mag, mag_unc)
 - Gaia table `gaiadr3.sso_reflectance_spectrum`: one row per (source_id, wavelength) — 16 bands per asteroid, wavelength in nm
 - SMASS ingest: `from prospector.ingest.smass import ingest_smass_dir, ingest_smass_file` — reuses MITHNEOS reader
 - Gaia cross-match: `number_mp` → IAU number (preferred), `denomination` → entity_resolver (fallback), skip `Gaia-DR3SSO-*` internal IDs
@@ -551,4 +561,55 @@ Started: 2026-02-23
   - CSV uses csv.DictWriter with explicit COLUMNS list for stable column order
   - _fmt and _fmt_sci helpers handle None → empty string gracefully
   - Analog and window computation are opt-in (slow for large datasets)
+---
+
+## 2026-02-23 — near-earth-h36: hapke-modeling
+- Implemented Stage 3B Hapke radiative transfer forward modeling in `prospector/spectral/hapke_model.py`
+- Full Hapke (1981, 2012) physics: SSA from optical constants, intimate mixture mixing, SMFe space weathering (Hapke 2001), bidirectional reflectance via H-function
+- 5 built-in mineral endmembers: olivine, pyroxene, plagioclase, troilite, Fe-Ni metal — each with representative optical constants (n, k with Gaussian absorption bands)
+- L-BFGS-B optimization with free scaling factor and bootstrap uncertainty estimation
+- 10-parameter fit: 4 area fractions (5th derived), 5 grain sizes, 1 SMFe volume fraction
+- DB integration: `model_asteroid()` reads best normalised spectrum, fits, stores to `hapke_modeling` table; `model_all()` runs batch for top-N scoring candidates
+- Added `hapke_modeling` table to `prospector/db.py` schema (20 columns)
+- Updated `tests/test_db.py` EXPECTED_TABLES list
+- Files changed: `prospector/spectral/hapke_model.py` (new), `tests/test_spectral_hapke_model.py` (new), `prospector/db.py`, `tests/test_db.py`
+- 45 tests in `tests/test_spectral_hapke_model.py`: SSA computation, mixing, SMFe weathering, reflectance conversion, forward model, fitting, DB integration, physical sanity checks
+- **Learnings for future iterations:**
+  - Metal (high k) is DARKER than silicates in Hapke model — opaque materials SSA ≈ Fresnel Se (~0.5), transparent silicates SSA → 1.0
+  - `from prospector.spectral.hapke_model import model_asteroid, model_all, forward_model, fit_spectrum`
+  - Endmember optical constants parameterized as k(λ) = baseline + Σ Gaussian bands — extensible to new minerals
+  - Forward model uses free scaling factor (same as curve_match) so normalization differences don't matter
+  - Bootstrap uncertainty (default 50 iterations) warm-starts from best fit — typically takes ~6s per asteroid
+  - `apply_smfe()` uses Hapke (2001) formulation with characteristic rind thickness of 0.1 μm
+---
+
+## 2026-02-23 — near-earth-lvc: phase-curve-analysis
+- Implemented H, G1, G2 photometric phase curve model (Muinonen et al. 2010)
+- Files changed: `prospector/db.py` (added phase_curve table), `prospector/spectral/phase_curve.py` (new), `tests/test_phase_curve.py` (new, 36 tests), `tests/test_db.py` (updated table list)
+- Module provides: basis functions (cubic spline on tabulated values), forward model, grid-search + L-BFGS-B fitting, taxonomy hint from G1-G2 clustering, geometric albedo, phase integral
+- **Learnings for future iterations:**
+  - G1 vs G2 discrimination requires opposition surge data (α < 5°) — without small phase angles, the parameters are individually degenerate
+  - Two-stage fitting (magnitude-space grid search → local refinement) is more robust than pure gradient descent for H,G1,G2
+  - Taxonomy centroids from Penttila et al. 2016: S(0.25,0.21), C(0.82,0.02), X(0.58,0.10), B(0.09,0.55)
+  - Phase integral formula: q = 0.009082 + 0.4061*G1 + 0.8768*G2
+  - `from prospector.spectral.phase_curve import fit_phase_curve, fit_all, h_g1g2_model`
+  - `fit_all(conn)` reads from `mpc_photometry` table (user-created), writes to `phase_curve` table
+---
+
+## 2026-02-24 — near-earth-e5r: spin-barrier-filter
+- Created `prospector/ingest/lcdb.py`: LCDB rotation period ingestion + spin-barrier classification
+- Key functions: `ingest_lcdb()`, `classify_spin()`
+- Added `rotation_properties` table to `prospector/db.py` (9 columns: period, amplitude, quality, is_monolithic, is_binary_suspect)
+- Added `compute_spin_modifier()` to `prospector/scoring/scorer.py` — multiplicative factor (1.15 monolithic / 0.80 binary / 1.0 default)
+- Updated `score_asteroid()` with `is_monolithic` and `is_binary_suspect` kwargs
+- Updated `score_all()` to LEFT JOIN rotation_properties and pass spin data to scorer
+- Updated `tests/test_db.py` EXPECTED_TABLES, `tests/test_scoring_scorer.py` required keys
+- 39 tests in `tests/test_ingest_lcdb.py`: helpers, spin classification, spin modifier, ingest integration (designation fallback, quality filter, idempotent reingest), scorer integration
+- Files changed: `prospector/db.py`, `prospector/ingest/lcdb.py` (new), `prospector/scoring/scorer.py`, `tests/test_ingest_lcdb.py` (new), `tests/test_db.py`, `tests/test_scoring_scorer.py`
+- **Learnings for future iterations:**
+  - LCDB quality codes: '0','1','2','2+','3' — ordinal ranking, U=3 is most reliable
+  - Spin barrier at 2.2 hr is Warner et al. (2009) — objects below are monolithic (no rubble pile can hold together)
+  - Binary suspects: P > 6.0 hr AND amplitude > 0.7 mag — high amplitude from elongated shape or eclipsing binary
+  - `from prospector.ingest.lcdb import ingest_lcdb, classify_spin`
+  - Modifier is multiplicative on composite_score, not additive — preserves relative ranking among similarly-structured bodies
 ---

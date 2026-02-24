@@ -18,6 +18,7 @@ EXPECTED_TABLES = sorted([
     "phase_curve",
     "pgm_convergence",
     "physical_properties",
+    "rotation_properties",
     "scores",
     "spectra",
     "taxonomy",

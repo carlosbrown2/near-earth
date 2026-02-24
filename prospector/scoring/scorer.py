@@ -73,6 +73,10 @@ DEFAULT_RECOVERABILITY = {
 # MOID exponential decay scale (AU) for accessibility proxy
 _MOID_SCALE = 0.1
 
+# Spin-barrier scoring modifiers
+_MONOLITHIC_BONUS = 1.15      # 15% bonus for fast rotators (easier to mine)
+_BINARY_SUSPECT_PENALTY = 0.80  # 20% penalty for likely rubble piles/binaries
+
 # Fallback density for unknown taxonomy classes
 _FALLBACK_DENSITY = {"mean": 2.0, "std": 1.0, "min": 0.5, "max": 5.0}
 
@@ -192,6 +196,32 @@ def compute_confidence(prob_vector):
     return max(0.01, 1.0 - entropy / max_entropy)
 
 
+def compute_spin_modifier(is_monolithic=None, is_binary_suspect=None):
+    """Scoring modifier from rotation properties (spin-barrier filter).
+
+    Monolithic bodies (fast rotators, P < 2.2 hr) get a bonus — they lack
+    the rubble-pile structure that complicates mining operations.
+    Binary suspects (slow + high amplitude) get a penalty.
+
+    Parameters
+    ----------
+    is_monolithic : bool or None
+        True if rotation period is below the spin barrier (2.2 hr).
+    is_binary_suspect : bool or None
+        True if slow rotator with large lightcurve amplitude.
+
+    Returns
+    -------
+    float
+        Modifier in [0.80, 1.15].  Returns 1.0 if no rotation data.
+    """
+    if is_monolithic is True:
+        return _MONOLITHIC_BONUS
+    if is_binary_suspect is True:
+        return _BINARY_SUSPECT_PENALTY
+    return 1.0
+
+
 def _grade_to_fraction(grade_value, unit):
     """Convert a grade value to a mass fraction."""
     if unit == "ppm":
@@ -227,6 +257,8 @@ def score_asteroid(
     material_values=None,
     recoverability=None,
     rng=None,
+    is_monolithic=None,
+    is_binary_suspect=None,
 ):
     """Monte Carlo composite mining score for a single asteroid.
 
@@ -251,13 +283,17 @@ def score_asteroid(
     recoverability : dict, optional
         ``{material: {class: factor}}`` override.
     rng : numpy.random.Generator, optional
+    is_monolithic : bool, optional
+        True if fast rotator (P < 2.2 hr).  Applies bonus to score.
+    is_binary_suspect : bool, optional
+        True if slow rotator with large amplitude.  Applies penalty.
 
     Returns
     -------
     dict
         Keys: composite_score, estimated_mass_kg, grade_estimate,
         target_material, unit_value, accessibility, confidence,
-        score_mode, material_contributions.
+        spin_modifier, score_mode, material_contributions.
     """
     if config is None:
         config = load_config()
@@ -275,6 +311,7 @@ def score_asteroid(
     # Non-varying components
     accessibility = compute_accessibility(moid, a, e)
     confidence = compute_confidence(prob_vector)
+    spin_modifier = compute_spin_modifier(is_monolithic, is_binary_suspect)
 
     # Config sections
     density_priors = config["density_priors"]["classes"]
@@ -327,8 +364,8 @@ def score_asteroid(
             total_value += value
             material_totals[material] += value
 
-        # 5. Apply confidence and accessibility
-        sample_scores[i] = total_value * confidence * accessibility
+        # 5. Apply confidence, accessibility, and spin modifier
+        sample_scores[i] = total_value * confidence * accessibility * spin_modifier
 
     # Aggregate
     composite_score = float(np.mean(sample_scores))
@@ -358,6 +395,7 @@ def score_asteroid(
         "unit_value": best_unit_value,
         "accessibility": accessibility,
         "confidence": confidence,
+        "spin_modifier": spin_modifier,
         "score_mode": mode,
         "material_contributions": material_contributions,
     }
@@ -392,11 +430,14 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
             a.asteroid_id,
             o.a, o.e, o.i, o.moid,
             COALESCE(o.diameter, pp.diameter_km) AS diameter_km,
-            t.prob_vector
+            t.prob_vector,
+            rp.is_monolithic,
+            rp.is_binary_suspect
         FROM asteroids a
         JOIN orbits o ON a.asteroid_id = o.asteroid_id
         LEFT JOIN physical_properties pp ON a.asteroid_id = pp.asteroid_id
         LEFT JOIN taxonomy t ON a.asteroid_id = t.asteroid_id
+        LEFT JOIN rotation_properties rp ON a.asteroid_id = rp.asteroid_id
         WHERE COALESCE(o.diameter, pp.diameter_km) IS NOT NULL
           AND o.a IS NOT NULL
           AND o.e IS NOT NULL
@@ -406,7 +447,8 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
 
     count = 0
     for row in rows:
-        asteroid_id, a, e_val, i_deg, moid, diameter_km, prob_blob = row
+        (asteroid_id, a, e_val, i_deg, moid, diameter_km, prob_blob,
+         is_monolithic, is_binary_suspect) = row
 
         prob_vector = None
         if prob_blob is not None:
@@ -425,6 +467,8 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
             n_samples=n_samples,
             mode=mode,
             rng=rng,
+            is_monolithic=bool(is_monolithic) if is_monolithic is not None else None,
+            is_binary_suspect=bool(is_binary_suspect) if is_binary_suspect is not None else None,
         )
 
         conn.execute(

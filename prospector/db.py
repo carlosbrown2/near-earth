@@ -144,6 +144,19 @@ CREATE TABLE IF NOT EXISTS pgm_convergence (
     notes             TEXT                -- textual summary
 );
 
+-- Rotation properties from LCDB (spin-barrier filter)
+CREATE TABLE IF NOT EXISTS rotation_properties (
+    asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    rotation_period   REAL,               -- rotation period (hours)
+    period_unc        REAL,               -- period uncertainty (hours)
+    amplitude         REAL,               -- lightcurve amplitude (mag)
+    amplitude_unc     REAL,               -- amplitude uncertainty (mag)
+    quality_code      TEXT,               -- LCDB U code: '0','1','2','2+','3'
+    is_monolithic     BOOLEAN,            -- True if P < 2.2 hr (above spin barrier)
+    is_binary_suspect BOOLEAN,            -- True if slow + large amplitude
+    source            TEXT DEFAULT 'LCDB' -- data provenance
+);
+
 -- Scoring output
 CREATE TABLE IF NOT EXISTS scores (
     asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),

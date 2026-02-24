@@ -257,7 +257,7 @@ class TestScoreAsteroid:
         required_keys = {
             "composite_score", "estimated_mass_kg", "grade_estimate",
             "target_material", "unit_value", "accessibility",
-            "confidence", "score_mode", "material_contributions",
+            "confidence", "spin_modifier", "score_mode", "material_contributions",
         }
         assert required_keys == set(result.keys())
 
