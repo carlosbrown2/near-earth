@@ -1,0 +1,100 @@
+# Ralph Progress Log
+Project: Asteroid Mining Prospector
+Started: 2026-02-23
+
+## Codebase Patterns
+- Package root: `prospector/` with subpackages `ingest/`, `spectral/`, `scoring/`, `ephemeris/`
+- pytest configured via `pyproject.toml` with `testpaths = ["tests"]` and `pythonpath = ["."]`
+- Scoring YAML configs go in `scoring/` directory (project root, not inside `prospector/`)
+- Data files are gitignored (`data/`); create subdirs programmatically in ingest modules
+- Python 3.11.8 available on system (no venv currently; `env/` in .gitignore)
+- Database access: `prospector.db.get_connection(":memory:")` for tests, `get_connection()` for default file DB
+- BLOB round-trip: `array.tobytes()` to store, `np.frombuffer(blob, dtype=np.float64)` to read
+- Schema is idempotent (`CREATE TABLE IF NOT EXISTS`) — safe to call `init_schema()` multiple times
+- SBDB ingest: `from prospector.ingest.sbdb import ingest_sbdb_csv` — takes csv_path + conn, returns row count
+- SPK-ID mapping: numbered asteroids spkid ∈ [2000001,2999999] → asteroid_id = spkid - 2000000; others pass through
+- Use `INSERT OR REPLACE` for idempotent ingestion — safe to re-run on same data
+- Column names normalized to lowercase in ingest — handles case variations in CSV headers
+- NEOWISE ingest: `from prospector.ingest.neowise import ingest_neowise` — takes filepath + conn, returns row count
+- NEOWISE cross-match: IAU number first (from preloaded set), designation fallback (DB lookup)
+- FK-safe ingestion: preload `known_ids = set(row[0] for row in conn.execute("SELECT asteroid_id FROM asteroids"))` before inserting into child tables
+- Column alias resolution: `_resolve_columns()` pattern — try explicit map first, then known aliases list, case-insensitive
+- astropy available via astroquery dep — `from astropy.io import ascii as astropy_ascii` for IPAC table format
+- classy taxonomy: `pip install space-classy tf-keras 'tensorflow-probability==0.24.*'`; import as `import classy`
+- classy API: `classy.Spectrum(wave=arr, refl=arr, pV=albedo)` — albedo MUST be `pV=`, NOT `albedo=`
+- classy classification: `spec.classify(taxonomy='mahlke')` → `spec.class_mahlke` (label) + `spec.class_A..Z` (17 probabilities)
+- classy Mahlke classes: A, B, C, Ch, D, E, K, L, M, O, P, Q, R, S, V, X, Z
+- classy requires numpy<2.0 — use isolated venv; set ROCKS_CACHE_DIR env var for automated runs
+
+---
+
+## 2026-02-23 — near-earth-3o3: project-setup
+- Created `pyproject.toml` with numpy, scipy, pandas, astroquery as core deps
+- Created `prospector/` package with 4 subpackages: ingest, spectral, scoring, ephemeris
+- Created `tests/` with conftest.py (project_root, data_dir fixtures) and smoke tests
+- Created `scoring/` directory for YAML config artifacts
+- **Learnings for future iterations:**
+  - `data/` is fully gitignored — don't try to track .gitkeep files in it
+  - Tests run from project root: `python3 -m pytest tests/ -v`
+  - No venv setup yet — using system Python 3.11.8
+---
+
+## 2026-02-23 — near-earth-ihi: schema-design
+- Created `prospector/db.py`: full PRD §12 schema (7 tables), connection management
+- Tables: asteroids, orbits, physical_properties, spectra, taxonomy, band_analysis, scores
+- `get_connection()` enables WAL journal mode and foreign keys; supports `:memory:` and file paths
+- `init_schema()` and `table_names()` helper functions
+- 13 tests in `tests/test_db.py`: schema init, idempotency, FK enforcement, numpy BLOB round-trip, multiple spectra per asteroid, connection options
+- **Learnings for future iterations:**
+  - Use `get_connection(":memory:")` in tests — fast, no cleanup needed
+  - Foreign keys are enforced (PRAGMA foreign_keys=ON) — insert parent rows first
+  - SQLite stores booleans as 0/1 integers — test assertions should expect int, not bool
+  - `CREATE TABLE IF NOT EXISTS` makes schema idempotent — downstream modules can call `init_schema()` safely
+---
+
+## 2026-02-23 — near-earth-cxl: sbdb-ingest
+- Created `prospector/ingest/sbdb.py`: SBDB bulk CSV → asteroids + orbits tables
+- Key functions: `ingest_sbdb_csv()`, `spkid_to_asteroid_id()`, `parse_full_name()`
+- Handles: numbered/unnumbered asteroids, missing fields as NULL, neo/pha flag parsing, neo_only filter
+- Uses pandas chunked reading (configurable batch_size) for large CSVs
+- INSERT OR REPLACE for idempotent re-ingestion
+- 36 tests in `tests/test_ingest_sbdb.py`: unit tests for helpers + integration tests with sample CSV
+- **Learnings for future iterations:**
+  - SBDB full_name format: `"  4179 Toutatis (1989 FB)"` — leading spaces, optional parens for designation
+  - SPK-ID for numbered asteroids = 2000000 + IAU number; unnumbered use 3xxxxxx range
+  - Use `pd.isna()` to check for NaN in pandas — handles float NaN, None, and pd.NA
+  - Always normalize CSV column names to lowercase — SBDB exports may vary in casing
+  - `_safe_float()` helper pattern: try float(), catch ValueError/TypeError, return None
+---
+
+## 2026-02-23 — near-earth-2qi: neowise-ingest
+- Created `prospector/ingest/neowise.py`: NEOWISE PDS SBN diameter/albedo → physical_properties table
+- Key function: `ingest_neowise()` — reads CSV or IPAC table format, cross-matches to existing asteroids
+- Supports flexible column name resolution with aliases (handles varying PDS SBN column names)
+- Cross-match: IAU number (preferred, checked against preloaded known_ids set) → designation fallback (DB lookup)
+- FK-safe: preloads known asteroid_ids to avoid IntegrityError on child table inserts
+- 32 tests in `tests/test_ingest_neowise.py`: unit tests for helpers + integration tests with sample data
+- **Learnings for future iterations:**
+  - Preload `known_ids` set before batch insertion into FK-constrained child tables — avoids IntegrityError
+  - `_resolve_columns()` pattern: map logical names → actual DF columns via explicit map + alias fallback — reusable for any variable-format input
+  - NEOWISE PDS SBN uses IPAC table format (.tab) — `astropy.io.ascii.read(path, format='ipac')` handles it
+  - For cross-matching without entity-resolver: number match covers >95% of cases; designation fallback covers the rest
+  - Test fixtures: create `db_with_asteroids` fixture that pre-populates asteroids table for downstream ingest tests
+---
+
+## 2026-02-23 — near-earth-d52: validate-classy
+- Research spike: verified `space-classy` 0.8.8 installs and works on Python 3.12
+- Mahlke 2022 MCFA taxonomy produces probabilistic 17-class assignments
+- Full API documented in `tasks/validate-classy-findings.md`
+- 17 tests in `tests/test_validate_classy.py`: installation, spectrum creation, Mahlke classification, DeMeo fallback, preprocessing
+- **Learnings for future iterations:**
+  - PyPI name is `space-classy`, import name is `classy` — NOT the cosmology `classy` package
+  - Albedo kwarg MUST be `pV=value`, not `albedo=value` — `albedo=` is silently ignored
+  - Requires tensorflow 2.16 + tensorflow-probability==0.24.* + tf-keras — version mismatches break MCFA model loading
+  - space-classy pins numpy<2.0 — conflicts with packages needing numpy>=2; use dedicated venv
+  - `ROCKS_CACHE_DIR` env var avoids interactive cache dir prompt on first run
+  - MCFA model handles missing values (NaN) via imputation — partial wavelength coverage works
+  - DeMeo taxonomy (PCA-based) is available as cross-reference but not probabilistic
+  - Classify from /tmp or non-numpy-source directory to avoid numpy import issues
+  - Wrapper pattern for taxonomy.py: extract probabilities via `getattr(spec, f'class_{c}')` for all 17 classes
+---
