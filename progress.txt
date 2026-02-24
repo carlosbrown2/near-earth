@@ -74,6 +74,10 @@ Started: 2026-02-23
 - match_spectrum(wl_ast, refl_ast, wl_lab, refl_lab) resamples to overlap, applies free scaling, computes WMSE + ρ
 - Taxonomy-meteorite mapping in TAXONOMY_METEORITE_MAP: S→{OC,Iron}, C→{CC}, M→{Iron}, V→{HED}, etc.
 - RHO_THRESHOLD = 0.90; constant spectra (zero std) get rho=1.0 if WMSE≈0
+- CNN mineral: `from prospector.spectral.cnn_mineral import predict_all, predict_spectrum, assess_agreement`
+- CNN grid: 0.45-2.45μm at 5nm (401 channels); resample via scipy.interpolate.interp1d
+- PyTorch is optional dep — `_check_dependencies()` pattern for graceful fallback
+- cnn_mineral table: ol/opx/cpx_pct, fa/fs/wo_mol_pct, uncertainties, classical_agreement, method
 
 ---
 
@@ -411,4 +415,29 @@ Started: 2026-02-23
   - Accessibility function when Lambert solver available: use dv_total with dv_scale=7.0
   - Frequency multiplier is separate from delta-v score — apply as a product
   - Garcia Yarnoz 2013 (NOT Elvis 2014) for ERO attribution — per compass audit
+---
+
+## 2026-02-23 — near-earth-xuk: cnn-mineral-quantification
+- Created `prospector/spectral/cnn_mineral.py`: Stage 2B CNN-based mineral quantification wrapper
+- Key functions: `resample_to_cnn_grid()`, `predict_spectrum()`, `predict_asteroid()`, `predict_all()`, `assess_agreement()`
+- Helper functions: `_fill_nan_channels()`, `_check_dependencies()`, `_load_model()`
+- CNN input: VNIR spectrum resampled to 0.45-2.45μm at 5nm spacing (401 channels)
+- Domain check: S*-complex only (same SILICATE_CLASSES as band_analysis/weathering)
+- NaN gap filling via linear interpolation for CNN's continuous input requirement
+- Modal abundance normalization: OL+OPX+CPX → 100%
+- MC dropout uncertainty: n_mc forward passes with dropout enabled
+- Agreement assessment: compares CNN ol/(ol+opx) with classical Dunn ol_opx_ratio
+- Added `cnn_mineral` table to schema in `db.py` (14 columns + method identifier)
+- Updated EXPECTED_TABLES in `tests/test_db.py` to include `cnn_mineral`
+- PyTorch and Asteroid-spectra are optional dependencies (graceful ImportError)
+- 44 tests in `tests/test_spectral_cnn_mineral.py` (4 skipped without PyTorch)
+- **Learnings for future iterations:**
+  - PyTorch optional dependency pattern: `_check_dependencies()` + late import inside functions
+  - CNN expects continuous input — NaN gaps from telluric masking must be interpolated through
+  - scipy.interpolate.interp1d with bounds_error=False, fill_value=np.nan handles edge NaN correctly
+  - Modal abundances from CNN may not sum to 100% — normalize after clipping to [0, 100]
+  - `from prospector.spectral.cnn_mineral import predict_all, predict_spectrum, assess_agreement`
+  - Agreement thresholds: 10pp (good), 20pp (fair) based on ~10% Dunn calibration RMSE
+  - predict_all loads model once for batch efficiency via _model parameter passthrough
+  - confidence-formula bead (near-earth-f4d) is now unblocked by this bead
 ---
