@@ -90,6 +90,23 @@ CREATE TABLE IF NOT EXISTS band_analysis (
     calibration    TEXT                   -- 'dunn2010', 'gaffey1993_zone'
 );
 
+-- Laboratory reference spectra (meteorite samples, no asteroid FK)
+CREATE TABLE IF NOT EXISTS lab_spectra (
+    sample_id      TEXT NOT NULL,           -- RELAB sample ID (e.g., 'TB-TJM-090')
+    spectrum_key   TEXT PRIMARY KEY,        -- unique spectrum identifier (sample_id + measurement)
+    meteorite_name TEXT,                    -- e.g., 'Murchison'
+    meteorite_type TEXT,                    -- e.g., 'CM2'
+    meteorite_group TEXT,                   -- e.g., 'CM'
+    sample_desc    TEXT,                    -- free-text description from catalog
+    grain_size_min REAL,                    -- minimum grain size (μm)
+    grain_size_max REAL,                    -- maximum grain size (μm)
+    wavelengths    BLOB,                    -- numpy array serialized
+    reflectance    BLOB,                    -- numpy array serialized
+    wl_min         REAL,                    -- min wavelength (μm)
+    wl_max         REAL,                    -- max wavelength (μm)
+    source         TEXT DEFAULT 'RELAB'     -- library origin
+);
+
 -- Scoring output
 CREATE TABLE IF NOT EXISTS scores (
     asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
@@ -111,6 +128,9 @@ CREATE INDEX IF NOT EXISTS idx_orbits_moid ON orbits(moid);
 CREATE INDEX IF NOT EXISTS idx_orbits_a ON orbits(a);
 CREATE INDEX IF NOT EXISTS idx_asteroids_neo ON asteroids(neo);
 CREATE INDEX IF NOT EXISTS idx_scores_composite ON scores(composite_score);
+CREATE INDEX IF NOT EXISTS idx_lab_spectra_type ON lab_spectra(meteorite_type);
+CREATE INDEX IF NOT EXISTS idx_lab_spectra_group ON lab_spectra(meteorite_group);
+CREATE INDEX IF NOT EXISTS idx_lab_spectra_sample ON lab_spectra(sample_id);
 """
 
 
