@@ -737,3 +737,14 @@ Started: 2026-02-23
   - Lifespan context manager handles DB open/close; re-opens with `check_same_thread=False` for async compat
   - `PRAGMA query_only = ON` enforces read-only at the API layer
 ---
+
+## 2026-02-24 — near-earth-bj4: Rankings endpoint
+- Created `prospector/api/routers/rankings.py` — GET /v1/rankings with pagination
+- Query params: mode, limit (1-500), offset, min_score, material
+- Reuses JOIN pattern from `output.py:_fetch_candidates()` but with offset+count support
+- Files: `prospector/api/routers/{__init__,rankings}.py` (new), `prospector/api/app.py` (router registration), `tests/test_api_rankings.py` (16 tests)
+- **Learnings for future iterations:**
+  - `scores` table has `asteroid_id` as PK — each asteroid can only have one score row per mode (can't have both earth_return and in_space in same row)
+  - API router pattern: create router in `routers/` module, `app.include_router()` in `create_app()`
+  - Use `_build_where()` helper to compose SQL WHERE clauses with parameterized queries
+---
