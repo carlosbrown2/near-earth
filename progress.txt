@@ -758,3 +758,12 @@ Started: 2026-02-23
   - `_row_to_detail()` pattern: flat SQL row → nested dict with null sections for missing JOINs
   - Check `if flat["key"] is not None` for nullable LEFT JOIN results before building section dicts
 ---
+
+## 2026-02-24 — near-earth-o19: Asteroid search endpoint
+- Added GET /v1/asteroids search to `prospector/api/routers/asteroids.py`
+- Supports: q (prefix match), neo/pha booleans, min/max diameter, min/max moid, taxonomy_class, limit/offset
+- Files: `prospector/api/routers/asteroids.py` (modified), `tests/test_api_search.py` (new, 17 tests)
+- **Learnings for future iterations:**
+  - SQLite LIKE is case-insensitive by default for ASCII; use COLLATE NOCASE for explicit guarantees
+  - COALESCE(o.diameter, pp.diameter_km) handles dual diameter sources in WHERE and SELECT
+---
