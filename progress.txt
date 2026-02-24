@@ -53,6 +53,10 @@ Started: 2026-02-23
 - score_all(conn, mode, n_samples) writes to scores table; uses COALESCE(o.diameter, pp.diameter_km) for diameter fallback
 - score_asteroid returns dict with composite_score, estimated_mass_kg, grade_estimate, target_material, material_contributions
 - Recoverability factors: Phase 1 defaults in scorer.py; Phase 2 will load from YAML config
+- Gaia DR3 ingest: `from prospector.ingest.gaia import ingest_gaia_file, ingest_gaia_tap` — TAP query or local CSV/VOTable
+- Gaia table `gaiadr3.sso_reflectance_spectrum`: one row per (source_id, wavelength) — 16 bands per asteroid, wavelength in nm
+- Gaia cross-match: `number_mp` → IAU number (preferred), `denomination` → entity_resolver (fallback), skip `Gaia-DR3SSO-*` internal IDs
+- Gaia quality flags: 0=good, 1=poor, 2=compromised — `skip_compromised=True` filters all-compromised spectra
 
 ---
 
@@ -274,4 +278,24 @@ Started: 2026-02-23
   - Material contributions dict shows per-material value breakdown — useful for output-csv bead
   - Phase 1 recoverability factors are hardcoded defaults — recoverability-accessibility bead will replace with YAML-driven values
   - COALESCE(o.diameter, pp.diameter_km) in SQL picks SBDB diameter first, NEOWISE fallback
+---
+
+## 2026-02-23 — near-earth-8dm: gaia-dr3-ingest
+- Created `prospector/ingest/gaia.py`: Gaia DR3 reflectance spectra → spectra table
+- Key functions: `ingest_gaia_tap()` (TAP query), `ingest_gaia_file()` (local CSV/VOTable), `_ingest_dataframe()` (core logic)
+- Helper functions: `_query_gaia_tap()`, `_load_gaia_file()`, `_group_spectra()`, `_resolve_asteroid_id()`, `_has_good_bands()`
+- Per-wavelength rows grouped by source_id → 16-band numpy arrays (wavelengths in nm → μm conversion)
+- Cross-match: `number_mp` → IAU number (direct), `denomination` → entity_resolver (fallback)
+- Quality gate: skip spectra where all 16 bands have `reflectance_spectrum_flag == 2` (compromised)
+- FK validation: preloads known_ids set (same pattern as MITHNEOS/NEOWISE)
+- Stores as numpy BLOBs with survey='Gaia', wl_min≈0.374μm, wl_max≈1.034μm
+- 32 tests in `tests/test_ingest_gaia.py`: grouping, quality flags, resolution, DB integration, CSV file, sanity checks
+- **Learnings for future iterations:**
+  - Gaia DR3 `sso_reflectance_spectrum` stores one row per (source_id, wavelength) — must GROUP BY to get per-asteroid spectra
+  - Wavelengths in nm in Gaia archive — convert to μm for our schema consistency
+  - `number_mp` is the Gaia equivalent of IAU asteroid number — direct match when present
+  - `denomination` field needs whitespace normalization; `Gaia-DR3SSO-*` prefixed entries are internal IDs (skip)
+  - Quality flags (0/1/2) allow selective filtering — skip_compromised=True is the safe default
+  - astroquery.gaia: use `Gaia.launch_job_async()` for the full ~968K row dataset
+  - SMASS ingest can follow same pattern: load → group → resolve → FK check → BLOB store
 ---
