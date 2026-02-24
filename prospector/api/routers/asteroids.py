@@ -1,18 +1,19 @@
-"""Asteroid detail endpoint (US-002).
+"""Asteroid endpoints (US-002, US-003).
 
-GET /v1/asteroids/{asteroid_id} — full detail for one asteroid,
-joining all available data tables.
+GET /v1/asteroids/{asteroid_id} — full detail for one asteroid.
+GET /v1/asteroids — search/filter asteroids with pagination.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from prospector.api.auth import get_api_key
 from prospector.api.app import get_db
+from prospector.api.models import PaginatedResponse
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(get_api_key)])
 
@@ -187,3 +188,116 @@ def get_asteroid_detail(
             detail="Asteroid not found",
         )
     return _row_to_detail(row)
+
+
+# --- Search endpoint (US-003) ---
+
+_SEARCH_SELECT = """
+    SELECT a.asteroid_id, a.name, a.designation, a.neo, a.pha,
+           o.a, o.e, o.i, o.moid,
+           COALESCE(o.diameter, pp.diameter_km) AS diameter_km,
+           t.primary_class, t.primary_prob
+    FROM asteroids a
+    LEFT JOIN orbits o ON a.asteroid_id = o.asteroid_id
+    LEFT JOIN physical_properties pp ON a.asteroid_id = pp.asteroid_id
+    LEFT JOIN taxonomy t ON a.asteroid_id = t.asteroid_id
+"""
+
+_SEARCH_COUNT = """
+    SELECT COUNT(*)
+    FROM asteroids a
+    LEFT JOIN orbits o ON a.asteroid_id = o.asteroid_id
+    LEFT JOIN physical_properties pp ON a.asteroid_id = pp.asteroid_id
+    LEFT JOIN taxonomy t ON a.asteroid_id = t.asteroid_id
+"""
+
+_SEARCH_FIELDS = [
+    "asteroid_id", "name", "designation", "neo", "pha",
+    "a", "e", "i", "moid", "diameter_km",
+    "taxonomy_class", "taxonomy_prob",
+]
+
+
+def _build_search_where(
+    q: str | None,
+    neo: bool | None,
+    pha: bool | None,
+    min_diameter: float | None,
+    max_diameter: float | None,
+    min_moid: float | None,
+    max_moid: float | None,
+    taxonomy_class: str | None,
+) -> tuple[str, list[Any]]:
+    """Build WHERE clause for asteroid search."""
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if q is not None:
+        clauses.append("(a.name LIKE ? OR a.designation LIKE ? COLLATE NOCASE)")
+        pattern = f"{q}%"
+        params.extend([pattern, pattern])
+
+    if neo is not None:
+        clauses.append("a.neo = ?")
+        params.append(int(neo))
+
+    if pha is not None:
+        clauses.append("a.pha = ?")
+        params.append(int(pha))
+
+    if min_diameter is not None:
+        clauses.append("COALESCE(o.diameter, pp.diameter_km) >= ?")
+        params.append(min_diameter)
+
+    if max_diameter is not None:
+        clauses.append("COALESCE(o.diameter, pp.diameter_km) <= ?")
+        params.append(max_diameter)
+
+    if min_moid is not None:
+        clauses.append("o.moid >= ?")
+        params.append(min_moid)
+
+    if max_moid is not None:
+        clauses.append("o.moid <= ?")
+        params.append(max_moid)
+
+    if taxonomy_class is not None:
+        clauses.append("t.primary_class = ?")
+        params.append(taxonomy_class)
+
+    if not clauses:
+        return "", params
+    return " WHERE " + " AND ".join(clauses), params
+
+
+@router.get("/asteroids", response_model=PaginatedResponse)
+def search_asteroids(
+    db: sqlite3.Connection = Depends(get_db),
+    q: Optional[str] = Query(None, min_length=1),
+    neo: Optional[bool] = Query(None),
+    pha: Optional[bool] = Query(None),
+    min_diameter: Optional[float] = Query(None, ge=0),
+    max_diameter: Optional[float] = Query(None, ge=0),
+    min_moid: Optional[float] = Query(None, ge=0),
+    max_moid: Optional[float] = Query(None, ge=0),
+    taxonomy_class: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> PaginatedResponse:
+    """Search and filter asteroids with pagination."""
+    where, params = _build_search_where(
+        q, neo, pha, min_diameter, max_diameter, min_moid, max_moid, taxonomy_class
+    )
+
+    total = db.execute(_SEARCH_COUNT + where, params).fetchone()[0]
+
+    query = (
+        _SEARCH_SELECT + where
+        + " ORDER BY a.asteroid_id"
+        + f" LIMIT {limit} OFFSET {offset}"
+    )
+    rows = db.execute(query, params).fetchall()
+
+    data = [dict(zip(_SEARCH_FIELDS, row)) for row in rows]
+
+    return PaginatedResponse(data=data, total=total, limit=limit, offset=offset)
