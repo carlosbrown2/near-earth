@@ -25,6 +25,16 @@ Started: 2026-02-23
 - classy classification: `spec.classify(taxonomy='mahlke')` → `spec.class_mahlke` (label) + `spec.class_A..Z` (17 probabilities)
 - classy Mahlke classes: A, B, C, Ch, D, E, K, L, M, O, P, Q, R, S, V, X, Z
 - classy requires numpy<2.0 — use isolated venv; set ROCKS_CACHE_DIR env var for automated runs
+- Entity resolver: `from prospector.ingest.entity_resolver import resolve` — takes any identifier string + optional conn, returns ResolvedID(asteroid_id, designation, packed, source)
+- MITHNEOS ingest: `from prospector.ingest.mithneos import ingest_mithneos_dir` — takes dirpath + conn, returns spectrum count
+- Spectral ingest pattern: read file → parse filename for identity → resolve to asteroid_id → FK check → store as numpy BLOBs
+- MPC pack/unpack: `pack_designation("1998 SF36")` → `"J98S36F"`, `unpack_designation("J98S36F")` → `"1998 SF36"`
+- Spectral preprocessing: `from prospector.spectral.preprocessing import preprocess_all, preprocess_spectrum`
+- Stage 0 pipeline: resample → normalize (550nm) → mask telluric (ground-based) → estimate SNR → assess quality → update DB
+- Default grid: `DEFAULT_GRID = np.arange(0.35, 2.55, 0.005)` — 440 points at 5nm spacing
+- Ground-based surveys for telluric masking: `GROUND_BASED_SURVEYS = {"MITHNEOS", "SMASS"}`
+- Quality flags: 'good' (SNR≥25, coverage≥1.5μm), 'low_snr' (SNR<25), 'partial' (narrow coverage)
+- Normalization falls back to nearest valid wavelength when 550nm is out of range (e.g., NIR-only spectra)
 
 ---
 
@@ -97,4 +107,58 @@ Started: 2026-02-23
   - DeMeo taxonomy (PCA-based) is available as cross-reference but not probabilistic
   - Classify from /tmp or non-numpy-source directory to avoid numpy import issues
   - Wrapper pattern for taxonomy.py: extract probabilities via `getattr(spec, f'class_{c}')` for all 17 classes
+---
+
+## 2026-02-23 — near-earth-mpo: entity-resolver
+- Created `prospector/ingest/entity_resolver.py`: cross-survey ID normalization
+- Key functions: `pack_designation()`, `unpack_designation()`, `normalize_designation()`, `resolve()`, `parse_mithneos_filename()`
+- MPC packed↔unpacked conversion with full cycle encoding (0-619)
+- DB-backed resolution: number → SPK-ID → packed designation → unpacked designation → name → alias (full_name search)
+- Pure conversion mode (no DB) for designation transforms
+- ResolvedID dataclass with asteroid_id, designation, packed, source
+- 230 tests in `tests/test_entity_resolver.py`: 50+ known multi-survey asteroids, cycle encoding/decoding, pack/unpack roundtrips, DB resolution
+- **Learnings for future iterations:**
+  - MPC packed designation format: [century][yy][half_month][cycle_2char][second_letter] — 7 chars total
+  - Century codes: I=18xx, J=19xx, K=20xx
+  - Cycle encoding: 0-99 as two digits; 100+ as letter+digit (A=10..Z=35, a=36..z=61 for tens place)
+  - MPC half-month letters skip I (A-H, J-Y); order letters skip I (A-H, J-Z)
+  - `from prospector.ingest.entity_resolver import resolve, pack_designation, unpack_designation`
+  - `resolve(identifier, conn)` returns `ResolvedID` or None — works with any identifier format
+  - Downstream ingest modules (MITHNEOS, SMASS, Gaia) should use `resolve()` for cross-matching
+---
+
+## 2026-02-23 — near-earth-4w9: mithneos-ingest
+- Created `prospector/ingest/mithneos.py`: MITHNEOS ASCII spectra → spectra table
+- Key functions: `_read_spectrum_file()` (2- or 3-column ASCII), `ingest_mithneos_file()` (single file), `ingest_mithneos_dir()` (batch)
+- Filename → asteroid_id via `parse_mithneos_filename()` from entity_resolver (numbered: `a004179.sp05.txt` → 4179)
+- Unnumbered objects resolved via `resolve()` with DB lookup
+- FK validation: preloads `known_ids` set (same pattern as NEOWISE ingest)
+- Stores wavelengths/reflectance/uncertainty as numpy BLOBs; records wl_min, wl_max, survey='MITHNEOS'
+- Supports multiple spectra per asteroid (different .spNN observations)
+- 19 tests in `tests/test_ingest_mithneos.py`: file parsing, BLOB round-trip, FK integrity, batch ingest
+- **Learnings for future iterations:**
+  - MITHNEOS files are simple whitespace-delimited: wl(μm), reflectance, optional uncertainty — no header
+  - `parse_mithneos_filename()` already exists in entity_resolver — don't reimplement
+  - Spectra table uses AUTOINCREMENT on spectrum_id — INSERT (not INSERT OR REPLACE) for multiple spectra per asteroid
+  - Pattern: preload known_ids set for FK validation before batch inserts into child tables
+  - Future spectral ingest modules (SMASS, Gaia) can follow same structure: read → resolve → FK check → BLOB store
+---
+
+## 2026-02-23 — near-earth-d3l: spectral-preprocessing
+- Created `prospector/spectral/preprocessing.py`: Stage 0 normalization and QC
+- Key functions: `resample()`, `normalize()`, `mask_telluric()`, `estimate_snr()`, `assess_quality()`, `preprocess_spectrum()`, `preprocess_all()`
+- Resamples to common 5nm grid (0.35-2.55μm), NaN outside original range
+- Normalizes reflectance=1.0 at 550nm (falls back to nearest valid wavelength for NIR-only)
+- Masks telluric absorption (1.35-1.45μm, 1.80-2.00μm) for ground-based surveys only
+- SNR estimation: uncertainty-based (median |refl|/unc) or smoothness heuristic (running-median residuals)
+- Quality flagging: 'good' (SNR≥25, coverage≥1.5μm), 'low_snr', 'partial'
+- Updates spectra table in-place: sets normalized=TRUE, snr_estimate, quality_flag, replaces BLOBs with resampled data
+- 39 tests in `tests/test_spectral_preprocessing.py`: unit tests per function + integration tests on DB
+- **Learnings for future iterations:**
+  - `preprocess_all(conn)` only processes rows with `normalized=FALSE OR normalized IS NULL` — safe to re-run
+  - Telluric masking sets reflectance to NaN (not removal) — downstream must handle NaN channels
+  - SNR smoothness heuristic uses window=7 running median — works well for typical 200+ channel spectra
+  - Space-based surveys (Gaia) skip telluric masking — add to `GROUND_BASED_SURVEYS` set for new ground surveys
+  - wl_min/wl_max after preprocessing reflect valid (non-NaN) range, not full grid extent
+  - `preprocess_spectrum()` copies numpy arrays from `frombuffer()` before modification (avoids read-only buffer errors)
 ---
