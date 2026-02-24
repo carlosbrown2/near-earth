@@ -87,10 +87,15 @@ def create_app() -> FastAPI:
             scores_count=scores,
         )
 
-    # Placeholder v1 router — downstream beads add actual endpoints
+    # Placeholder v1 status — authenticated
     @app.get("/v1/status", dependencies=[Depends(get_api_key)])
     def v1_status() -> dict[str, str]:
-        """Authenticated status endpoint (placeholder for v1 router)."""
+        """Authenticated status endpoint."""
         return {"status": "ok", "version": "v1"}
+
+    # Register routers
+    from prospector.api.routers.rankings import router as rankings_router
+
+    app.include_router(rankings_router)
 
     return app
