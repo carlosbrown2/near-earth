@@ -49,6 +49,10 @@ Started: 2026-02-23
 - Temperature correction: T ≈ 280/sqrt(a) K; band centers shift by ~5.7e-5 (BI) and ~1.0e-4 (BII) um/K relative to 300K lab
 - Granvik prior: `from prospector.scoring.granvik_prior import taxonomy_prior` — takes (a, e, i_deg), returns 17-element numpy array
 - Granvik prior output is BLOB-compatible with taxonomy.prob_vector — scorer can treat both uniformly
+- Scorer: `from prospector.scoring.scorer import score_all, score_asteroid` — Monte Carlo composite mining score
+- score_all(conn, mode, n_samples) writes to scores table; uses COALESCE(o.diameter, pp.diameter_km) for diameter fallback
+- score_asteroid returns dict with composite_score, estimated_mass_kg, grade_estimate, target_material, material_contributions
+- Recoverability factors: Phase 1 defaults in scorer.py; Phase 2 will load from YAML config
 
 ---
 
@@ -247,4 +251,27 @@ Started: 2026-02-23
   - Source taxonomy vectors are pre-normalised at module load time via `_build_source_vectors()`
   - Extreme orbits (far from all resonances) fall back to uniform prior over all 7 regions
   - `from prospector.scoring.granvik_prior import taxonomy_prior, source_region_probabilities`
+---
+
+## 2026-02-23 — near-earth-4mt: scorer
+- Created `prospector/scoring/scorer.py`: Monte Carlo composite mining scorer
+- Key functions: `score_asteroid()` (single asteroid MC scoring), `score_all()` (batch DB integration)
+- Helper functions: `sample_from_dist()`, `estimate_mass_kg()`, `compute_accessibility()`, `compute_confidence()`
+- MC loop: draw taxonomy class from prob_vector → sample density → compute mass → sum material values × recoverability × unit_value → apply confidence × accessibility
+- Two economic modes: `earth_return` (PGMs dominate) and `in_space` (water/structural dominate)
+- Accessibility proxy: exponential decay on MOID (exp(-moid/0.1)); fallback to perihelion distance
+- Confidence: 1 − H/H_max where H is Shannon entropy of taxonomy prob_vector
+- Phase 1 recoverability factors as constants (full design deferred to Phase 2 bead)
+- Material values configurable via YAML or dict override; defaults for 5 materials
+- score_all queries asteroids+orbits+physical_properties+taxonomy, uses COALESCE for diameter fallback
+- 55 tests in `tests/test_scoring_scorer.py`: unit tests, MC scoring, DB integration, physical sanity checks
+- **Learnings for future iterations:**
+  - `from prospector.scoring.scorer import score_all, score_asteroid` — main entry points
+  - `score_asteroid()` returns dict with composite_score, estimated_mass_kg, grade_estimate, target_material, material_contributions, etc.
+  - `score_all(conn, mode='earth_return', n_samples=1000)` — writes to scores table, returns count
+  - Use `rng=np.random.default_rng(seed)` for deterministic testing of MC scorer
+  - `_grade_to_fraction()` converts ppm→1e-6, wt_pct→/100 — downstream beads should use same convention
+  - Material contributions dict shows per-material value breakdown — useful for output-csv bead
+  - Phase 1 recoverability factors are hardcoded defaults — recoverability-accessibility bead will replace with YAML-driven values
+  - COALESCE(o.diameter, pp.diameter_km) in SQL picks SBDB diameter first, NEOWISE fallback
 ---
