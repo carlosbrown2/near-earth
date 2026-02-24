@@ -107,6 +107,25 @@ CREATE TABLE IF NOT EXISTS lab_spectra (
     source         TEXT DEFAULT 'RELAB'     -- library origin
 );
 
+-- CNN mineral quantification results (S-complex only, Korda et al. 2023)
+CREATE TABLE IF NOT EXISTS cnn_mineral (
+    asteroid_id         INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    ol_pct              REAL,                  -- olivine modal abundance (%)
+    opx_pct             REAL,                  -- orthopyroxene modal abundance (%)
+    cpx_pct             REAL,                  -- clinopyroxene modal abundance (%)
+    fa_mol_pct          REAL,                  -- fayalite mol% in olivine
+    fs_mol_pct          REAL,                  -- ferrosilite mol% in orthopyroxene
+    wo_mol_pct          REAL,                  -- wollastonite mol% in clinopyroxene
+    ol_unc              REAL,                  -- uncertainty for ol_pct
+    opx_unc             REAL,                  -- uncertainty for opx_pct
+    cpx_unc             REAL,                  -- uncertainty for cpx_pct
+    fa_unc              REAL,                  -- uncertainty for Fa
+    fs_unc              REAL,                  -- uncertainty for Fs
+    wo_unc              REAL,                  -- uncertainty for Wo
+    classical_agreement TEXT,                  -- 'good', 'fair', 'poor', 'no_classical'
+    method              TEXT DEFAULT 'korda2023'  -- model identifier
+);
+
 -- Scoring output
 CREATE TABLE IF NOT EXISTS scores (
     asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),

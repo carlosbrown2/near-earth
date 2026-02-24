@@ -11,6 +11,7 @@ from prospector.db import get_connection, init_schema, table_names
 EXPECTED_TABLES = sorted([
     "asteroids",
     "band_analysis",
+    "cnn_mineral",
     "lab_spectra",
     "orbits",
     "physical_properties",
