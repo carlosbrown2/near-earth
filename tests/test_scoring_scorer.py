@@ -14,6 +14,7 @@ from prospector.scoring.scorer import (
     _grade_to_fraction,
     compute_accessibility,
     compute_confidence,
+    compute_thermal_depletion_factor,
     estimate_mass_kg,
     load_config,
     sample_from_dist,
@@ -257,7 +258,8 @@ class TestScoreAsteroid:
         required_keys = {
             "composite_score", "estimated_mass_kg", "grade_estimate",
             "target_material", "unit_value", "accessibility",
-            "confidence", "spin_modifier", "score_mode", "material_contributions",
+            "confidence", "spin_modifier", "thermal_depletion_factor",
+            "score_mode", "material_contributions",
         }
         assert required_keys == set(result.keys())
 
@@ -488,6 +490,115 @@ class TestScoreAll:
         db.commit()
         count = score_all(db, n_samples=100)
         assert count == 0
+
+
+# ---- compute_thermal_depletion_factor tests ----------------------------------
+
+
+class TestComputeThermalDepletionFactor:
+    def test_no_data_returns_one(self):
+        assert compute_thermal_depletion_factor(None) == 1.0
+
+    def test_safe_perihelion(self):
+        # q >= 1.0 AU → no penalty
+        assert compute_thermal_depletion_factor(1.0) == 1.0
+        assert compute_thermal_depletion_factor(1.5) == 1.0
+        assert compute_thermal_depletion_factor(3.0) == 1.0
+
+    def test_low_perihelion_severe_penalty(self):
+        # q ≈ 0.2 AU → near-complete depletion
+        factor = compute_thermal_depletion_factor(0.2)
+        assert factor < 0.10
+
+    def test_moderate_perihelion_partial_penalty(self):
+        # q ≈ 0.6 AU → ~50% retention (sigmoid center)
+        factor = compute_thermal_depletion_factor(0.6)
+        assert 0.4 < factor < 0.6
+
+    def test_monotonically_increasing(self):
+        """Higher perihelion → higher water retention."""
+        q_values = [0.1, 0.3, 0.5, 0.6, 0.7, 0.9, 1.0]
+        factors = [compute_thermal_depletion_factor(q) for q in q_values]
+        for i in range(len(factors) - 1):
+            assert factors[i] <= factors[i + 1], (
+                f"Factor should increase: q={q_values[i]}→{factors[i]} vs "
+                f"q={q_values[i+1]}→{factors[i+1]}"
+            )
+
+    def test_output_range(self):
+        """Factor always in [0, 1]."""
+        for q in [0.01, 0.1, 0.3, 0.5, 0.8, 1.0, 2.0, 5.0]:
+            factor = compute_thermal_depletion_factor(q)
+            assert 0.0 <= factor <= 1.0, f"q={q}: factor={factor} out of range"
+
+
+class TestThermalDepletionIntegration:
+    def test_low_q_reduces_water_score(self, config):
+        """C-type asteroid at low perihelion should have reduced water score."""
+        pv = np.zeros(17)
+        pv[2] = 1.0  # C-type (water-bearing)
+
+        # Safe orbit (q ≈ 1.7 AU)
+        safe = score_asteroid(
+            diameter_km=1.0, a=2.0, e=0.15, i_deg=5.0,
+            prob_vector=pv, config=config, n_samples=500,
+            mode="in_space", rng=np.random.default_rng(42),
+        )
+        # Low-perihelion orbit (q ≈ 0.3 AU)
+        hot = score_asteroid(
+            diameter_km=1.0, a=2.0, e=0.85, i_deg=5.0,
+            prob_vector=pv, config=config, n_samples=500,
+            mode="in_space", rng=np.random.default_rng(42),
+        )
+        assert hot["material_contributions"]["water"] < safe["material_contributions"]["water"]
+        assert hot["thermal_depletion_factor"] < 0.2
+        assert safe["thermal_depletion_factor"] == 1.0
+
+    def test_low_q_does_not_affect_pgm(self, config):
+        """M-type PGM score should be unaffected by thermal depletion."""
+        pv = np.zeros(17)
+        pv[8] = 1.0  # M-type (metal-rich)
+
+        safe = score_asteroid(
+            diameter_km=1.0, a=2.0, e=0.15, i_deg=5.0,
+            prob_vector=pv, config=config, n_samples=500,
+            mode="earth_return", rng=np.random.default_rng(42),
+        )
+        hot = score_asteroid(
+            diameter_km=1.0, a=2.0, e=0.85, i_deg=5.0,
+            prob_vector=pv, config=config, n_samples=500,
+            mode="earth_return", rng=np.random.default_rng(42),
+        )
+        # PGM contributions should be similar (only accessibility differs)
+        # The thermal depletion factor does NOT affect PGMs
+        assert hot["thermal_depletion_factor"] < 0.2
+        # PGM contribution is unaffected by thermal depletion (only accessibility differs)
+        # Normalise out accessibility difference to compare material contributions
+        hot_pgm_norm = hot["material_contributions"]["pgm"] / hot["accessibility"]
+        safe_pgm_norm = safe["material_contributions"]["pgm"] / safe["accessibility"]
+        assert hot_pgm_norm == pytest.approx(safe_pgm_norm, rel=0.15)
+
+    def test_explicit_q_au_overrides_derived(self, config):
+        """Explicit q_au parameter should override a*(1-e)."""
+        pv = np.zeros(17)
+        pv[2] = 1.0  # C-type
+
+        # Orbital elements give q = 2.0 * 0.85 = 0.3 AU (hot), but override with safe q
+        result = score_asteroid(
+            diameter_km=1.0, a=2.0, e=0.85, i_deg=5.0,
+            prob_vector=pv, config=config, n_samples=100,
+            mode="in_space", rng=np.random.default_rng(42),
+            q_au=1.5,  # override: safe perihelion
+        )
+        assert result["thermal_depletion_factor"] == 1.0
+
+    def test_thermal_depletion_in_result_dict(self, config, rng):
+        result = score_asteroid(
+            diameter_km=1.0, a=1.5, e=0.3, i_deg=10.0,
+            config=config, n_samples=100, rng=rng,
+        )
+        assert "thermal_depletion_factor" in result
+        assert 0.0 <= result["thermal_depletion_factor"] <= 1.0
 
 
 # ---- Scoring sanity checks ---------------------------------------------------

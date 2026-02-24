@@ -77,6 +77,12 @@ _MOID_SCALE = 0.1
 _MONOLITHIC_BONUS = 1.15      # 15% bonus for fast rotators (easier to mine)
 _BINARY_SUSPECT_PENALTY = 0.80  # 20% penalty for likely rubble piles/binaries
 
+# Thermal depletion model (Toliou et al. 2021)
+# Low-perihelion NEOs experience >600 K surface temps that dehydrate phyllosilicates.
+_THERMAL_Q_CENTER = 0.6   # AU — 50% water retention point
+_THERMAL_STEEPNESS = 8.0  # logistic steepness
+_THERMAL_Q_SAFE = 1.0     # AU — no penalty above this
+
 # Fallback density for unknown taxonomy classes
 _FALLBACK_DENSITY = {"mean": 2.0, "std": 1.0, "min": 0.5, "max": 5.0}
 
@@ -222,6 +228,32 @@ def compute_spin_modifier(is_monolithic=None, is_binary_suspect=None):
     return 1.0
 
 
+def compute_thermal_depletion_factor(q_au=None):
+    """Water retention factor based on perihelion distance (Toliou et al. 2021).
+
+    Near-Sun dwell time thermally depletes phyllosilicate-bound water.
+    Surface temperatures exceed 600 K at q < 0.5 AU, dehydrating C/Ch/B-type
+    asteroids.  Returns a multiplicative factor applied to water grades only.
+
+    Parameters
+    ----------
+    q_au : float or None
+        Perihelion distance in AU.  If None, returns 1.0 (no penalty).
+
+    Returns
+    -------
+    float
+        Water retention factor in [0, 1].  1.0 = fully retained, 0 = depleted.
+    """
+    if q_au is None:
+        return 1.0
+    if q_au >= _THERMAL_Q_SAFE:
+        return 1.0
+    # Logistic sigmoid: steep transition around q_center
+    factor = 1.0 / (1.0 + math.exp(-_THERMAL_STEEPNESS * (q_au - _THERMAL_Q_CENTER)))
+    return max(0.0, min(1.0, factor))
+
+
 def _grade_to_fraction(grade_value, unit):
     """Convert a grade value to a mass fraction."""
     if unit == "ppm":
@@ -259,6 +291,7 @@ def score_asteroid(
     rng=None,
     is_monolithic=None,
     is_binary_suspect=None,
+    q_au=None,
 ):
     """Monte Carlo composite mining score for a single asteroid.
 
@@ -287,13 +320,18 @@ def score_asteroid(
         True if fast rotator (P < 2.2 hr).  Applies bonus to score.
     is_binary_suspect : bool, optional
         True if slow rotator with large amplitude.  Applies penalty.
+    q_au : float, optional
+        Perihelion distance in AU.  Used by the thermal depletion filter
+        (Toliou et al. 2021) to penalise water grades for low-perihelion
+        orbits.  Computed from ``a * (1 - e)`` if not provided explicitly.
 
     Returns
     -------
     dict
         Keys: composite_score, estimated_mass_kg, grade_estimate,
         target_material, unit_value, accessibility, confidence,
-        spin_modifier, score_mode, material_contributions.
+        spin_modifier, thermal_depletion_factor, score_mode,
+        material_contributions.
     """
     if config is None:
         config = load_config()
@@ -312,6 +350,11 @@ def score_asteroid(
     accessibility = compute_accessibility(moid, a, e)
     confidence = compute_confidence(prob_vector)
     spin_modifier = compute_spin_modifier(is_monolithic, is_binary_suspect)
+
+    # Thermal depletion factor — derive q from orbital elements if not given
+    if q_au is None and a is not None and e is not None:
+        q_au = a * (1.0 - e)
+    thermal_depl = compute_thermal_depletion_factor(q_au)
 
     # Config sections
     density_priors = config["density_priors"]["classes"]
@@ -355,6 +398,9 @@ def score_asteroid(
             if tax_class in mat_classes:
                 grade_raw = sample_from_dist(mat_classes[tax_class], rng)
                 grade_frac = _grade_to_fraction(grade_raw, mat_unit)
+                # Thermal depletion penalty: only water is affected
+                if material == "water":
+                    grade_frac *= thermal_depl
             else:
                 grade_frac = 0.0
 
@@ -396,6 +442,7 @@ def score_asteroid(
         "accessibility": accessibility,
         "confidence": confidence,
         "spin_modifier": spin_modifier,
+        "thermal_depletion_factor": thermal_depl,
         "score_mode": mode,
         "material_contributions": material_contributions,
     }
@@ -428,7 +475,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
         """
         SELECT
             a.asteroid_id,
-            o.a, o.e, o.i, o.moid,
+            o.a, o.e, o.i, o.moid, o.q,
             COALESCE(o.diameter, pp.diameter_km) AS diameter_km,
             t.prob_vector,
             rp.is_monolithic,
@@ -447,7 +494,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
 
     count = 0
     for row in rows:
-        (asteroid_id, a, e_val, i_deg, moid, diameter_km, prob_blob,
+        (asteroid_id, a, e_val, i_deg, moid, q_au, diameter_km, prob_blob,
          is_monolithic, is_binary_suspect) = row
 
         prob_vector = None
@@ -469,6 +516,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
             rng=rng,
             is_monolithic=bool(is_monolithic) if is_monolithic is not None else None,
             is_binary_suspect=bool(is_binary_suspect) if is_binary_suspect is not None else None,
+            q_au=q_au,
         )
 
         conn.execute(
