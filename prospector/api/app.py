@@ -96,8 +96,10 @@ def create_app() -> FastAPI:
     # Register routers
     from prospector.api.routers.rankings import router as rankings_router
     from prospector.api.routers.asteroids import router as asteroids_router
+    from prospector.api.routers.evoi import router as evoi_router
 
     app.include_router(rankings_router)
     app.include_router(asteroids_router)
+    app.include_router(evoi_router)
 
     return app
