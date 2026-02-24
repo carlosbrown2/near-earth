@@ -1,0 +1,234 @@
+# Recoverability factors and accessibility function parameters
+# Source: Literature review per tasks/scoring-recoverability-accessibility-design.md
+#
+# Recoverability = fraction of material practically extractable (0-1)
+# Accessibility = mission feasibility score from delta-v and MOID (0-1)
+#
+# Key references:
+#   Sonter 1997 (Acta Astronautica 41, 637-647) — mass payback ratio model
+#   Andrews et al. 2015 (NASA/TM-2015-218756) — extraction technology yields
+#   Cannon & Britt 2019 (Icarus 317, 470-478) — profitability model
+#   Cannon et al. 2023 — PGM grades (non-chondritic ratios at high Ir)
+#   Benner 2023 / NHATS — accessibility criteria (dv <= 12 km/s, dur <= 450 days)
+#   Garcia Yarnoz et al. 2013 (CMDA 116, 367-388) — ERO capture dv < 500 m/s
+#   Arredondo et al. 2024 — S-type water detection (450 ug/g, below extraction threshold)
+
+metadata:
+  description: >
+    Design document for recoverability_factor and accessibility components of
+    the Monte Carlo scoring formula. Recoverability maps {material, taxonomy_class}
+    to a 0-1 extraction feasibility fraction. Accessibility maps mission delta-v
+    to a 0-1 score via exponential decay with approach-frequency multiplier.
+  design_decisions:
+    recoverability_depends_on_size: false  # Not in Phase 2; would need mass-infrastructure threshold
+    separate_earth_return_vs_in_space: false  # Handled by score_mode in scorer.py (unit_value differs)
+    min_concentration_thresholds: >
+      S-type water (~450 ug/g) gets recoverability=0. Trace-level materials below
+      practical extraction thresholds are zeroed out in the recoverability table.
+
+# ---------------------------------------------------------------------------
+# Recoverability factors: {material: {taxonomy_class: factor}}
+# Factor = fraction of in-situ material that can be extracted and utilized.
+# Accounts for: extraction technology, mineral processing difficulty,
+#               separation steps, material form (bulk metal vs. trace, bound vs. free).
+# ---------------------------------------------------------------------------
+recoverability:
+  pgm:
+    description: >
+      Platinum Group Metals. M-type: PGMs at 10-50 ppm in bulk Fe-Ni metal,
+      requires electrochemical/acid separation. S-type: PGMs in 10-20% metal
+      fraction of OC matrix; requires two-stage separation (metal grains from
+      silicate, then PGMs from metal). Factor = metal_fraction * PGM_extraction.
+      Cannon et al. 2023: non-chondritic ratios reduce estimated PGM grades
+      by ~60% vs. Kargel 1994.
+    classes:
+      M:  0.30    # Bulk metal body; single-stage PGM extraction from Fe-Ni
+      X:  0.15    # X-type ambiguous without albedo; may be M-like or E-like
+      E:  0.05    # Enstatite chondrite analog; low metal fraction
+      S:  0.05    # OC analog: 10-20% metal × 0.3 extraction = ~3-6% effective
+      Q:  0.05    # Fresh OC surface, same metal fraction as S
+      K:  0.02    # CO/CV-like; metal content lower than H/L chondrites
+      L:  0.02    # Low-Fe silicate; minimal PGM-bearing metal
+      A:  0.02    # Pallasite/brachinite analog; small metal fraction
+  water:
+    description: >
+      Water and hydrated minerals. C/CM/CI types: 10-20 wt% bound water in
+      phyllosilicates, released by thermal processing at ~500°C (well-studied).
+      Andrews et al. 2015: thermal extraction yields 70-90% of bound water.
+      S-type: Arredondo 2024 detected ~450 ug/g, far below extraction threshold.
+    classes:
+      C:  0.70    # CM2/CI: ~10-20 wt% water in phyllosilicates; thermal extraction
+      Ch: 0.70    # Hydrated C-type (0.7 um feature); same process as C
+      B:  0.50    # B-type: heated/dehydrated C-type; 5-10 wt% residual water
+      D:  0.30    # Tagish-Lake analog; volatile-rich but less water than C
+      P:  0.20    # Primitive, low-albedo; modest hydration expected
+      K:  0.10    # CO/CV analog; some hydration in matrix
+      S:  0.00    # 450 ug/g: below any practical extraction threshold
+      Q:  0.00    # Same as S-type
+      M:  0.00    # Metallic; no significant water
+    min_concentration_threshold:
+      value: 0.1
+      unit: "wt_pct"
+      note: "Below 0.1 wt% (1000 ppm), thermal extraction is not viable"
+  iron:
+    description: >
+      Metallic iron (Fe-Ni) for structural use in space. M-type: bulk metal,
+      minimal processing needed. S-type: FeO bound in silicates requires
+      smelting/reduction (high energy cost in space). A-type: Fe-Ni in
+      pallasite metal phase, accessible by physical separation.
+    classes:
+      M:  0.80    # Bulk metal body; direct use or minimal processing
+      X:  0.40    # May be metallic; lower confidence
+      E:  0.30    # Enstatite chondrite; some free metal
+      S:  0.10    # OC: 10-20% metal grains separable from silicate
+      Q:  0.10    # Fresh OC; same as S
+      A:  0.15    # Pallasite: olivine + metal; physical separation
+      V:  0.02    # HED achondrite; minimal metal
+      K:  0.05    # CO/CV; small metal fraction
+      L:  0.05    # Low-Fe; limited metal
+  olivine:
+    description: >
+      Olivine (Mg,Fe)2SiO4 for refractory/structural use in space. A-type
+      asteroids are olivine-dominated (>90%). S-type OC analogs have 30-60%
+      olivine. Useful as foundry feedstock or radiation shielding.
+    classes:
+      A:  0.80    # Olivine-dominated; >90% by mass
+      O:  0.70    # R-chondrite/brachinite analog; olivine-rich
+      S:  0.40    # OC: 30-60% olivine in silicate fraction
+      Q:  0.40    # Fresh OC; same as S
+      R:  0.40    # R-chondrite analog; moderate olivine
+      K:  0.30    # CO/CV; olivine in chondrules + matrix
+      L:  0.30    # L-type: spinel-bearing; moderate olivine
+      V:  0.05    # HED: pyroxene-dominated; <5% olivine
+  pyroxene:
+    description: >
+      Pyroxene (Ca,Mg,Fe)SiO3 for structural/refractory use. V-type (HED)
+      asteroids are pyroxene-rich (>50%). S(IV)-S(VII) subtypes have
+      significant pyroxene from BAR analysis.
+    classes:
+      V:  0.60    # HED: >50% pyroxene (diogenite=almost pure pyroxene)
+      E:  0.50    # Enstatite chondrite; high enstatite (MgSiO3) content
+      S:  0.30    # OC: 20-40% pyroxene in silicate fraction
+      Q:  0.30    # Fresh OC; same as S
+      R:  0.25    # R-chondrite; moderate pyroxene
+      K:  0.20    # CO/CV; pyroxene in chondrules
+      L:  0.20    # L-type; moderate pyroxene
+      A:  0.05    # Pallasite: olivine-dominated; minimal pyroxene
+
+# ---------------------------------------------------------------------------
+# Accessibility function parameters
+# Function form: exponential decay on delta-v with approach-frequency multiplier
+#
+#   accessibility = exp(-dv / dv_scale) * freq_multiplier
+#
+# Chosen over sigmoid because:
+#   - No hard cutoff (smooth, physically motivated)
+#   - Naturally penalizes high delta-v progressively
+#   - Scale parameter dv_scale is intuitive (e-folding distance)
+#   - Consistent with Phase 1 MOID-based proxy (same functional form)
+#
+# When delta-v unavailable, fall back to MOID proxy:
+#   accessibility = exp(-moid / moid_scale)
+# ---------------------------------------------------------------------------
+accessibility:
+  function_form: "exponential_decay"
+  description: >
+    Exponential decay on total mission delta-v (departure + arrival).
+    Reference orbit: 200 km circular LEO. When full Lambert delta-v
+    unavailable, falls back to MOID-based proxy from Phase 1.
+
+  # Delta-v based (used when Lambert solver results available)
+  delta_v:
+    formula: "exp(-dv_total / dv_scale)"
+    dv_scale:
+      value: 7.0
+      unit: "km/s"
+      note: >
+        At dv=7 km/s, accessibility ≈ 0.37. NHATS cutoff is 12 km/s
+        (accessibility ≈ 0.18). EROs at <0.5 km/s get ~0.93.
+        Scale chosen so that: Tier 1 EROs (~0.5 km/s) → ~0.93,
+        Tier 2 easy (~6 km/s) → ~0.42, Tier 3 feasible (~12 km/s) → ~0.18,
+        Tier 4 hard (>15 km/s) → <0.12.
+    reference_orbit:
+      altitude_km: 200
+      type: "circular LEO"
+
+  # MOID-based fallback (used when delta-v not computed)
+  moid_proxy:
+    formula: "exp(-moid / moid_scale)"
+    moid_scale:
+      value: 0.1
+      unit: "AU"
+      note: >
+        MOID is a crude but available proxy for accessibility.
+        At MOID=0.05 AU, score ≈ 0.61. At MOID=0.01 AU, score ≈ 0.90.
+        At MOID=0.2 AU, score ≈ 0.14. Consistent with Phase 1 scorer.
+
+  # Approach frequency multiplier
+  frequency_multiplier:
+    formula: "min(1.0, sqrt(1.0 / synodic_period_years))"
+    note: >
+      Asteroids with long synodic periods (rare windows) are penalized.
+      At synodic=1 yr, multiplier=1.0. At synodic=4 yr, multiplier=0.5.
+      At synodic=10 yr, multiplier=0.32. Uses sqrt to avoid over-penalizing.
+      Applied as a multiplier on the delta-v or MOID score.
+    synodic_period_normalization: 1.0  # years; multiplier = 1.0 at this period
+
+  # Accessibility tiers (reference, not used in scoring formula)
+  tiers:
+    - name: "Tier 1 — ERO-class"
+      dv_range: "< 0.5 km/s"
+      description: "Easily Retrievable Objects (Garcia Yarnoz et al. 2013)"
+      accessibility_range: "> 0.93"
+    - name: "Tier 2 — Easy"
+      dv_range: "0.5 - 6 km/s"
+      description: "Low delta-v NEOs; comparable to lunar missions"
+      accessibility_range: "0.42 - 0.93"
+    - name: "Tier 3 — Feasible"
+      dv_range: "6 - 12 km/s"
+      description: "NHATS-accessible; within current propulsion capability"
+      accessibility_range: "0.18 - 0.42"
+    - name: "Tier 4 — Difficult"
+      dv_range: "> 12 km/s"
+      description: "Beyond NHATS criteria; requires advanced propulsion"
+      accessibility_range: "< 0.18"
+
+# ---------------------------------------------------------------------------
+# Worked examples (verification)
+# Using known asteroid parameters to sanity-check the scoring
+# ---------------------------------------------------------------------------
+verification_examples:
+  - asteroid: "16 Psyche"
+    type: "M"
+    notes: "Largest M-type; high PGM interest but dv ~8.5 km/s"
+    expected_behavior: >
+      High recoverability for PGMs (0.30) and iron (0.80).
+      Moderate accessibility (~0.30 at 8.5 km/s).
+      Should rank high for iron but penalized by high dv.
+  - asteroid: "101955 Bennu"
+    type: "B"
+    notes: "OSIRIS-REx target; carbonaceous; dv ~5.1 km/s"
+    expected_behavior: >
+      Moderate water recoverability (0.50 for B-type).
+      Good accessibility (~0.48 at 5.1 km/s).
+      Should rank well for water in-space-use.
+  - asteroid: "25143 Itokawa"
+    type: "S"
+    notes: "Hayabusa target; LL chondrite; dv ~4.6 km/s"
+    expected_behavior: >
+      Low PGM recoverability (0.05); moderate olivine (0.40).
+      Good accessibility (~0.52 at 4.6 km/s).
+      Should rank moderate for structural materials.
+  - asteroid: "99942 Apophis"
+    type: "S(IV)"
+    notes: "Potentially hazardous; very low dv ~3.5 km/s"
+    expected_behavior: >
+      Same material profile as Itokawa.
+      Excellent accessibility (~0.61 at 3.5 km/s).
+      Should rank above Itokawa due to lower dv.
+  - asteroid: "1943 Anteros"
+    type: "S/L"
+    notes: "Amor-class; dv ~5.5 km/s"
+    expected_behavior: >
+      Moderate material recoverability.
+      Good accessibility (~0.46 at 5.5 km/s).
