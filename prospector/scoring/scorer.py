@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from prospector.schemas import ScoringMode, ScoringResult
 from prospector.scoring.granvik_prior import MAHLKE_CLASSES, taxonomy_prior
 
 # Default config path
@@ -82,6 +83,11 @@ _BINARY_SUSPECT_PENALTY = 0.80  # 20% penalty for likely rubble piles/binaries
 _THERMAL_Q_CENTER = 0.6   # AU — 50% water retention point
 _THERMAL_STEEPNESS = 8.0  # logistic steepness
 _THERMAL_Q_SAFE = 1.0     # AU — no penalty above this
+
+# JWST 6μm water confirmation boost (Arredondo et al. 2024)
+# Unambiguous molecular water detection via H-O-H bending mode
+# boosts water grade confidence relative to taxonomy-only estimate.
+_JWST_WATER_BOOST = 3.0   # multiplicative boost to water grade
 
 # Fallback density for unknown taxonomy classes
 _FALLBACK_DENSITY = {"mean": 2.0, "std": 1.0, "min": 0.5, "max": 5.0}
@@ -285,13 +291,14 @@ def score_asteroid(
     prob_vector=None,
     config=None,
     n_samples=1000,
-    mode="earth_return",
+    mode: ScoringMode = "earth_return",
     material_values=None,
     recoverability=None,
     rng=None,
     is_monolithic=None,
     is_binary_suspect=None,
     q_au=None,
+    jwst_water_confirmed=None,
 ):
     """Monte Carlo composite mining score for a single asteroid.
 
@@ -324,14 +331,18 @@ def score_asteroid(
         Perihelion distance in AU.  Used by the thermal depletion filter
         (Toliou et al. 2021) to penalise water grades for low-perihelion
         orbits.  Computed from ``a * (1 - e)`` if not provided explicitly.
+    jwst_water_confirmed : bool, optional
+        True if JWST 6μm H-O-H bending mode confirms molecular water
+        (Arredondo et al. 2024).  Applies multiplicative boost to water
+        grade since detection is unambiguous.
 
     Returns
     -------
     dict
         Keys: composite_score, estimated_mass_kg, grade_estimate,
         target_material, unit_value, accessibility, confidence,
-        spin_modifier, thermal_depletion_factor, score_mode,
-        material_contributions.
+        spin_modifier, thermal_depletion_factor, jwst_water_boost,
+        score_mode, material_contributions.
     """
     if config is None:
         config = load_config()
@@ -355,6 +366,9 @@ def score_asteroid(
     if q_au is None and a is not None and e is not None:
         q_au = a * (1.0 - e)
     thermal_depl = compute_thermal_depletion_factor(q_au)
+
+    # JWST 6μm water confirmation boost
+    jwst_boost = _JWST_WATER_BOOST if jwst_water_confirmed else 1.0
 
     # Config sections
     density_priors = config["density_priors"]["classes"]
@@ -398,9 +412,10 @@ def score_asteroid(
             if tax_class in mat_classes:
                 grade_raw = sample_from_dist(mat_classes[tax_class], rng)
                 grade_frac = _grade_to_fraction(grade_raw, mat_unit)
-                # Thermal depletion penalty: only water is affected
+                # Water-specific modifiers
                 if material == "water":
-                    grade_frac *= thermal_depl
+                    grade_frac *= thermal_depl   # thermal depletion penalty
+                    grade_frac *= jwst_boost     # JWST 6μm confirmation boost
             else:
                 grade_frac = 0.0
 
@@ -421,7 +436,7 @@ def score_asteroid(
     material_contributions = {m: v / n_samples for m, v in material_totals.items()}
 
     # Dominant target material
-    best_material = max(material_contributions, key=material_contributions.get)
+    best_material = max(material_contributions, key=lambda k: material_contributions[k])
     best_unit_value = material_values.get(best_material, 0.0)
 
     # Expected grade for dominant material (weighted by taxonomy distribution)
@@ -433,7 +448,7 @@ def score_asteroid(
         if cls in mat_classes:
             best_grade += pv[ci] * _grade_to_fraction(mat_classes[cls]["mean"], mat_unit)
 
-    return {
+    result = {
         "composite_score": composite_score,
         "estimated_mass_kg": estimated_mass_kg,
         "grade_estimate": best_grade,
@@ -443,12 +458,15 @@ def score_asteroid(
         "confidence": confidence,
         "spin_modifier": spin_modifier,
         "thermal_depletion_factor": thermal_depl,
+        "jwst_water_boost": jwst_boost,
         "score_mode": mode,
         "material_contributions": material_contributions,
     }
+    ScoringResult.model_validate(result)
+    return result
 
 
-def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
+def score_all(conn, config_path=None, n_samples=1000, mode: ScoringMode = "earth_return"):
     """Score all asteroids with diameter data and write to the scores table.
 
     Queries asteroids that have orbital elements and a diameter estimate
@@ -479,12 +497,14 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
             COALESCE(o.diameter, pp.diameter_km) AS diameter_km,
             t.prob_vector,
             rp.is_monolithic,
-            rp.is_binary_suspect
+            rp.is_binary_suspect,
+            jw.detection AS jwst_water_confirmed
         FROM asteroids a
         JOIN orbits o ON a.asteroid_id = o.asteroid_id
         LEFT JOIN physical_properties pp ON a.asteroid_id = pp.asteroid_id
         LEFT JOIN taxonomy t ON a.asteroid_id = t.asteroid_id
         LEFT JOIN rotation_properties rp ON a.asteroid_id = rp.asteroid_id
+        LEFT JOIN jwst_water jw ON a.asteroid_id = jw.asteroid_id
         WHERE COALESCE(o.diameter, pp.diameter_km) IS NOT NULL
           AND o.a IS NOT NULL
           AND o.e IS NOT NULL
@@ -495,7 +515,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
     count = 0
     for row in rows:
         (asteroid_id, a, e_val, i_deg, moid, q_au, diameter_km, prob_blob,
-         is_monolithic, is_binary_suspect) = row
+         is_monolithic, is_binary_suspect, jwst_water_confirmed) = row
 
         prob_vector = None
         if prob_blob is not None:
@@ -517,6 +537,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode="earth_return"):
             is_monolithic=bool(is_monolithic) if is_monolithic is not None else None,
             is_binary_suspect=bool(is_binary_suspect) if is_binary_suspect is not None else None,
             q_au=q_au,
+            jwst_water_confirmed=bool(jwst_water_confirmed) if jwst_water_confirmed is not None else None,
         )
 
         conn.execute(

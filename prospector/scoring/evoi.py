@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
+from prospector.schemas import EVOIResultSchema, ObservationType, ScoringMode
 from prospector.scoring.granvik_prior import MAHLKE_CLASSES, taxonomy_prior
 from prospector.scoring.scorer import (
     compute_accessibility,
@@ -227,7 +229,7 @@ class EVOIResult:
     evoi_vis: float
     evoi_radar: float
     evoi_albedo: float
-    best_observation: str
+    best_observation: ObservationType
     best_evoi: float
 
     @property
@@ -248,7 +250,7 @@ def _score_distribution(
     moid: float | None,
     prob_vector: np.ndarray,
     config: dict,
-    mode: str,
+    mode: ScoringMode,
     n_samples: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
@@ -333,10 +335,10 @@ def compute_evoi(
     moid: float | None = None,
     prior: np.ndarray | None = None,
     config: dict | None = None,
-    mode: str = "earth_return",
+    mode: ScoringMode = "earth_return",
     n_samples: int = _EVOI_SAMPLES,
     rng: np.random.Generator | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Compute EVOI for each observation type.
 
     Parameters
@@ -438,15 +440,15 @@ def compute_evoi(
     evoi_albedo = max(0.0, std_prior - expected_std_albedo)
 
     # Best observation
-    evoi_map = {
+    evoi_map: dict[ObservationType, float] = {
         "vnir_spectroscopy": evoi_vnir,
         "vis_spectroscopy": evoi_vis,
         "radar": evoi_radar,
         "albedo": evoi_albedo,
     }
-    best_obs = max(evoi_map, key=evoi_map.get)
+    best_obs: ObservationType = max(evoi_map, key=lambda k: evoi_map[k])
 
-    return {
+    result = {
         "score_mean": mean_prior,
         "score_std": std_prior,
         "evoi_vnir": evoi_vnir,
@@ -456,6 +458,8 @@ def compute_evoi(
         "best_observation": best_obs,
         "best_evoi": evoi_map[best_obs],
     }
+    EVOIResultSchema.model_validate(result)
+    return result
 
 
 def compute_evoi_for_asteroid(
@@ -463,7 +467,7 @@ def compute_evoi_for_asteroid(
     conn,
     *,
     config: dict | None = None,
-    mode: str = "earth_return",
+    mode: ScoringMode = "earth_return",
     n_samples: int = _EVOI_SAMPLES,
     rng: np.random.Generator | None = None,
 ) -> EVOIResult | None:
@@ -541,7 +545,7 @@ def rank_all(
     conn,
     *,
     config_path=None,
-    mode: str = "earth_return",
+    mode: ScoringMode = "earth_return",
     n_samples: int = _EVOI_SAMPLES,
     neo_only: bool = True,
     max_asteroids: int | None = None,
