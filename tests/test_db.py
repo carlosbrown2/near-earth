@@ -15,6 +15,7 @@ EXPECTED_TABLES = sorted([
     "hapke_modeling",
     "lab_spectra",
     "orbits",
+    "phase_curve",
     "pgm_convergence",
     "physical_properties",
     "scores",

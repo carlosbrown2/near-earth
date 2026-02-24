@@ -179,6 +179,24 @@ CREATE TABLE IF NOT EXISTS hapke_modeling (
     n_bootstrap       INTEGER DEFAULT 0,  -- bootstrap iterations run
     notes             TEXT
 );
+
+-- Phase curve analysis results (H, G1, G2 system; Muinonen et al. 2010)
+CREATE TABLE IF NOT EXISTS phase_curve (
+    asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    h_fit             REAL,               -- fitted absolute magnitude
+    g1                REAL,               -- slope parameter G1
+    g2                REAL,               -- slope parameter G2
+    h_unc             REAL,               -- H uncertainty (1-sigma)
+    g1_unc            REAL,               -- G1 uncertainty
+    g2_unc            REAL,               -- G2 uncertainty
+    phase_integral    REAL,               -- phase integral q
+    n_obs             INTEGER,            -- number of observations used
+    rms_residual      REAL,               -- fit RMS residual (mag)
+    alpha_min         REAL,               -- min phase angle in data (deg)
+    alpha_max         REAL,               -- max phase angle in data (deg)
+    taxonomy_hint     TEXT,               -- inferred tax class from G1,G2
+    source            TEXT DEFAULT 'MPC'  -- data provenance
+);
 """
 
 # Index definitions for common query patterns
