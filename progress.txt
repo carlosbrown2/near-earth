@@ -58,6 +58,22 @@ Started: 2026-02-23
 - SMASS ingest: `from prospector.ingest.smass import ingest_smass_dir, ingest_smass_file` — reuses MITHNEOS reader
 - Gaia cross-match: `number_mp` → IAU number (preferred), `denomination` → entity_resolver (fallback), skip `Gaia-DR3SSO-*` internal IDs
 - Gaia quality flags: 0=good, 1=poor, 2=compromised — `skip_compromised=True` filters all-compromised spectra
+- RELAB ingest: `from prospector.ingest.relab import ingest_relab_dir, ingest_relab_file` — PDS4 .tab/.xml pairs
+- RELAB stores in `lab_spectra` table (no asteroid FK) — meteorite samples join conceptually via meteorite_type → taxonomy class
+- RELAB PDS4 XML namespace: `speclib` = `http://pds.nasa.gov/pds4/speclib/v1` — use `specimen_id`, `specimen_name`, `specimen_type`, `rock_subtype`
+- RELAB tab files: wavelength in nm (convert to μm), reflectance — 2-column fixed-width ASCII
+- RELAB meteorite identification: `specimen_type` contains "Meteorite" (values: "Other Meteorite", "Ordinary Chondrite", "Meteorite")
+- RELAB rock_subtype has multiple values: first=group (e.g., "Carbonaceous Chondrite"), second=type (e.g., "CM2")
+- Space weathering: `from prospector.spectral.weathering import deweather_all, fit_cs, deweather_spectrum`
+- Brunetto model: R_obs = R_fresh × exp(Cs/λ); Cs < 0 for reddening; deweather = R_obs × exp(-Cs/λ)
+- Cs fit: least-squares ln(R_norm) vs 1/λ in continuum regions (0.50-0.70, 1.25-1.35, 2.20-2.50 μm)
+- Weathering columns added via `_migrate_add_columns()` in db.py — ALTER TABLE IF NOT EXISTS pattern
+- Deweathered BLOB stored alongside original reflectance — band_analysis can prefer deweathered when available
+- Curve matching: `from prospector.spectral.curve_match import find_analogs, match_all, match_spectrum`
+- find_analogs(asteroid_id, conn, top_n=5) returns list of dicts with wmse, rho, scale_factor, taxonomy_weight
+- match_spectrum(wl_ast, refl_ast, wl_lab, refl_lab) resamples to overlap, applies free scaling, computes WMSE + ρ
+- Taxonomy-meteorite mapping in TAXONOMY_METEORITE_MAP: S→{OC,Iron}, C→{CC}, M→{Iron}, V→{HED}, etc.
+- RHO_THRESHOLD = 0.90; constant spectra (zero std) get rho=1.0 if WMSE≈0
 
 ---
 
@@ -314,4 +330,85 @@ Started: 2026-02-23
   - `parse_mithneos_filename` is survey-agnostic (just parses `aXXXXXX.spNN.txt` pattern) — could be renamed
   - SMASS is already in `GROUND_BASED_SURVEYS` set in preprocessing.py — telluric masking will apply
   - `from prospector.ingest.smass import ingest_smass_dir, ingest_smass_file`
+---
+
+## 2026-02-23 — near-earth-cmy: relab-ingest
+- Created `prospector/ingest/relab.py`: RELAB PDS4 meteorite spectral library → lab_spectra table
+- Key functions: `_parse_tab_file()` (2-col ASCII, nm→μm), `_parse_xml_label()` (PDS4 XML metadata), `ingest_relab_file()`, `ingest_relab_dir()`
+- Helper: `is_meteorite()` filters by `specimen_type` containing "Meteorite"
+- Added `lab_spectra` table to `prospector/db.py` — no FK to asteroids (meteorite samples are independent)
+- Table columns: sample_id, spectrum_key (PK), meteorite_name, meteorite_type, meteorite_group, sample_desc, grain_size_min/max, wavelengths/reflectance BLOBs, wl_min/max, source
+- Indexes on meteorite_type, meteorite_group, sample_id for query performance
+- INSERT OR REPLACE keyed on spectrum_key (filename stem) for idempotent re-ingestion
+- 35 tests in `tests/test_ingest_relab.py`: tab parsing, XML parsing, is_meteorite, file/dir ingest, BLOB roundtrip, schema integration, iron meteorite PGM use case
+- Updated EXPECTED_TABLES in `tests/test_db.py` to include `lab_spectra`
+- **Learnings for future iterations:**
+  - RELAB PDS4 archive at `pds-geosciences.wustl.edu/speclib/urn-nasa-pds-relab/` has `data_reflectance/bdr2/`, `bdr3/`, `ftir1/`, `ftir2/` subdirs
+  - Each spectrum is a paired `.tab` + `.xml` file; spectrum_key = filename stem (unique)
+  - PDS4 XML uses `speclib:` namespace prefix — parse with `xml.etree.ElementTree` + namespace dict
+  - `rock_subtype` can have MULTIPLE XML elements: first=broad group, second=specific classification (e.g., "CM2")
+  - Grain size in `specimen_min_size`/`specimen_max_size` with `unit="micrometer"` attribute — only present for particulate samples
+  - ~23,606 total RELAB spectra; filtering for meteorites reduces to a subset needed for analog matching
+  - No asteroid entity resolution needed — curve-matching bead will join via meteorite_type → taxonomy class
+  - `from prospector.ingest.relab import ingest_relab_dir, ingest_relab_file`
+---
+
+## 2026-02-23 — near-earth-muo: space-weathering-correction
+- Created `prospector/spectral/weathering.py`: Stage 1B Brunetto et al. (2006) space weathering correction
+- Key functions: `fit_cs()` (Cs parameter from continuum slope), `deweather_spectrum()` (apply correction), `deweather_asteroid()` (DB integration), `deweather_all()` (batch)
+- Brunetto model: R_observed(λ) = R_fresh(λ) × exp(Cs/λ); Cs < 0 for reddening/darkening
+- Cs fitting: least-squares regression of ln(R_norm) vs 1/λ in three continuum regions (0.50-0.70, 1.25-1.35, 2.20-2.50 μm)
+- Sanity bounds: Cs ∈ [-2.0, 0.1] μm; insufficient continuum points returns None
+- Only applies to silicate classes: {S, Q, K, A, L, O, R, V}
+- Added `weathering_cs` (REAL) and `deweathered` (BLOB) columns to spectra table via schema migration
+- Migration: `_add_column_if_missing()` pattern in db.py — uses PRAGMA table_info to check, ALTER TABLE to add
+- Preserves original reflectance — deweathered stored separately for downstream use
+- 31 tests in `tests/test_spectral_weathering.py`: Cs fitting, roundtrip recovery, DB integration, batch, schema migration, physical sanity
+- **Learnings for future iterations:**
+  - Schema migration pattern: `_add_column_if_missing(conn, table, column, type)` — safe for re-running
+  - Brunetto Cs typically -0.5 to 0.0 for real asteroids; -0.15 is moderate weathering
+  - Absorption bands don't interfere with Cs fitting because we use continuum-only regions
+  - band_analysis should check for `deweathered` column and prefer it when available
+  - `from prospector.spectral.weathering import deweather_all, fit_cs, deweather_spectrum`
+---
+
+## 2026-02-23 — near-earth-n40: curve-matching
+- Created `prospector/spectral/curve_match.py`: Stage 3 meteorite analog curve matching
+- Key functions: `match_spectrum()`, `compute_match_score()`, `find_analogs()`, `match_all()`
+- Helpers: `_resample_to_overlap()`, `_best_scale_factor()`, `_taxonomy_weight()`
+- Method: resample to overlap grid → free scaling α=(ast·lab)/(lab·lab) → WMSE + correlation ρ
+- Rank by WMSE ascending, reject ρ < 0.90 (PRD Option A)
+- Taxonomy-consistency filter: prob_vector weighted by TAXONOMY_METEORITE_MAP compatibility
+- Prefers deweathered spectrum when available (checks spectra.deweathered column)
+- Returns top-N analogs as list of dicts (no new DB table — pure computation)
+- 35 tests in `tests/test_spectral_curve_match.py`: resampling, scaling, scoring, taxonomy weights, DB integration, physical sanity
+- **Learnings for future iterations:**
+  - Free scaling handles albedo mismatch: α minimizes ||ast - α*lab||² analytically
+  - Constant spectra (featureless M-type matching featureless iron) need special rho handling: rho=1.0 if WMSE≈0
+  - RELAB spectra may have different wavelength grids → resample via scipy.interpolate.interp1d
+  - MIN_OVERLAP_POINTS=20 ensures statistical significance in match metrics
+  - `_taxonomy_weight()` is probabilistic: partial C-probability allows surprising CC matches for ambiguous X-type
+  - `from prospector.spectral.curve_match import find_analogs, match_all, match_spectrum`
+---
+
+## 2026-02-23 — near-earth-1ct: recoverability-accessibility
+- Created `scoring/recoverability_accessibility.yaml`: recoverability factors + accessibility function design
+- Recoverability: 5 materials × taxonomy classes, values 0-1 with literature rationale
+  - PGMs: M=0.30 (bulk metal), S=0.05 (two-stage OC extraction), per Cannon & Britt 2019
+  - Water: C/Ch=0.70 (thermal extraction), S=0.00 (450 μg/g below threshold)
+  - Iron: M=0.80 (bulk), S=0.10 (OC metal grains)
+  - Olivine: A=0.80 (olivine-dominated), S=0.40 (OC silicate fraction)
+  - Pyroxene: V=0.60 (HED), E=0.50 (enstatite)
+- Accessibility: exponential decay exp(-dv/dv_scale), dv_scale=7.0 km/s
+  - ERO (<0.5 km/s) → ~0.93; NHATS (12 km/s) → ~0.18; Hard (>15 km/s) → <0.12
+  - MOID fallback: exp(-moid/0.1) consistent with Phase 1
+  - Frequency multiplier: min(1.0, sqrt(1/synodic_years))
+- 4 accessibility tiers: ERO, Easy, Feasible, Difficult
+- 5 verification examples: Psyche, Bennu, Itokawa, Apophis, Anteros
+- 30 tests in `tests/test_scoring_recoverability.py`
+- **Learnings for future iterations:**
+  - Scorer should load this YAML and replace DEFAULT_RECOVERABILITY hardcoded dict
+  - Accessibility function when Lambert solver available: use dv_total with dv_scale=7.0
+  - Frequency multiplier is separate from delta-v score — apply as a product
+  - Garcia Yarnoz 2013 (NOT Elvis 2014) for ERO attribution — per compass audit
 ---
