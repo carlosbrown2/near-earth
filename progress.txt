@@ -41,6 +41,12 @@ Started: 2026-02-23
 - Taxonomy prob_vector: numpy BLOB of 17 floats in MAHLKE_CLASSES order (A,B,C,Ch,D,E,K,L,M,O,P,Q,R,S,V,X,Z)
 - Coverage detection: 'vnir' (vis+NIR), 'vis_only', 'nir_only' based on wl_min/wl_max thresholds
 - Mock classy in tests: `patch.dict("sys.modules", {"classy": mock_classy})` pattern — avoids tensorflow dependency in test suite
+- Band analysis: `from prospector.spectral.band_analysis import analyze_all, analyze_spectrum`
+- Band analysis eligibility: SILICATE_CLASSES = {S, Q, K, A, L, O, R, V} + normalized spectrum + wl_max >= 2.0 μm
+- Band analysis stores results in band_analysis table: band1_center, band2_center, bar, ol_opx_ratio, fa/fs_mol_pct, gaffey_subtype, calibration
+- Gaffey subtypes: S(I)-S(VII) zone classification; only S(IV) gets Dunn calibration (dunn2010), others get gaffey1993_zone
+- Telluric NaN gaps handled naturally by polynomial fitting — find_band_center interpolates through gaps
+- Temperature correction: T ≈ 280/sqrt(a) K; band centers shift by ~5.7e-5 (BI) and ~1.0e-4 (BII) um/K relative to 300K lab
 
 ---
 
@@ -185,4 +191,40 @@ Started: 2026-02-23
   - prob_vector stored as 17-element numpy float64 array in MAHLKE_CLASSES order — reconstruct dict via `zip(MAHLKE_CLASSES, np.frombuffer(blob))`
   - Coverage thresholds: VIS_UPPER=0.8μm, NIR_LOWER=1.0μm — boundary cases tested
   - `classify_all` catches per-asteroid exceptions so one failure doesn't block the batch
+---
+
+## 2026-02-23 — near-earth-8yl: band-analysis
+- Created `prospector/spectral/band_analysis.py`: Stage 2 classical band parameter extraction
+- Key functions: `find_peak()`, `linear_continuum()`, `remove_continuum()`, `find_band_center()`, `compute_band_area()`, `analyze_spectrum()`, `analyze_asteroid()`, `analyze_all()`
+- Continuum removal: linear continua tangent to peaks at ~0.7μm/~1.5μm (Band I) and ~1.5μm/~2.4μm (Band II)
+- Band centers via degree-4 polynomial fit + scipy.optimize.minimize_scalar
+- Temperature correction (Sanchez 2012): T=280/sqrt(a), shifts band centers by dBIC/dT and dBIIC/dT
+- BAR = BII_area/BI_area with Lindsay (2015/2016) red-edge correction
+- Dunn et al. (2010) calibrations for S(IV): ol/(ol+px), Fa, Fs
+- Gaffey S(I)-S(VII) zone classification from BIC vs BAR
+- Only processes silicate-class asteroids {S,Q,K,A,L,O,R,V} with NIR coverage ≥ 2.0μm
+- 51 tests in `tests/test_spectral_band_analysis.py`: unit + integration + DB tests
+- **Learnings for future iterations:**
+  - Telluric NaN gaps (1.35-1.45, 1.80-2.00 μm) are handled by polynomial fitting — no special gap-bridging needed
+  - Band II minimum (~1.95 μm) often falls in telluric mask — polynomial interpolates through the gap
+  - PRD Fa/Fs linear formulas give low values compared to literature; ol/(ol+px) from BAR is the most reliable Dunn output
+  - scipy.optimize.minimize_scalar with method='bounded' works well for polynomial minima in bounded wavelength ranges
+  - analyze_all follows same pattern as classify_all: query eligible, try each, catch exceptions, commit at end
+  - Synthetic Gaussian absorption bands make good test spectra — controllable center, depth, width
+---
+
+## 2026-02-23 — near-earth-f4q: scoring-config
+- Created `scoring/grade_density_priors.yaml`: literature-derived distributions for Monte Carlo scoring
+- Density priors: all 17 Mahlke classes from Carry (2012) bulk densities (includes macroporosity)
+- Grade estimates: PGM (Cannon 2023), water (Alexander 2012), iron/olivine/pyroxene (Dunn/Hutchison/Burbine)
+- S-type subgroup metal fractions (H/L/LL) for extraction cost modeling
+- All values as {mean, std, min, max} distributions with source citations and notes
+- 23 tests in `tests/test_scoring_config.py`: structure, distributions, physical plausibility, Psyche mass check
+- **Learnings for future iterations:**
+  - YAML config loading: `yaml.safe_load(open(path))` — all values are plain Python types (float, str, dict)
+  - Scorer should load config once and look up by taxonomy class + material key
+  - Porosity decision: use Carry (2012) bulk densities for mass estimation (correct for diameter-based volume)
+  - PGM Kargel→Cannon correction: ~60% reduction in estimated PGM grades for M-type
+  - X-type is degenerate without albedo — always use wide priors for X and Z classes
+  - S-type PGM requires separate metal fraction lookup for extraction cost modeling
 ---
