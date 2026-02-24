@@ -3,6 +3,9 @@ Project: Asteroid Mining Prospector
 Started: 2026-02-23
 
 ## Codebase Patterns
+- Hypothesis property tests: Use `deadline=None` for compute-heavy tests (EVOI). Use paired RNG seeds `np.random.default_rng(seed)` for fair monotonicity comparisons. Class-level `_config = load_config()` avoids per-example YAML loading.
+- EVOI computation is expensive (~2.4s per call at n_samples=30). Full `compute_evoi` should be tested with `deadline=None` and modest `max_examples`. Direct EVOI comparison (e.g., EVOI_vnir >= EVOI_vis) is unreliable at low n_samples due to MC noise — test mathematical prerequisites instead.
+- Literal types: `ScoringMode` and `ObservationType` defined in `prospector/schemas.py` — use for all mode/observation parameters
 - Package root: `prospector/` with subpackages `ingest/`, `spectral/`, `scoring/`, `ephemeris/`
 - pytest configured via `pyproject.toml` with `testpaths = ["tests"]` and `pythonpath = ["."]`
 - Scoring YAML configs go in `scoring/` directory (project root, not inside `prospector/`)
@@ -80,6 +83,11 @@ Started: 2026-02-23
 - Cs fit: least-squares ln(R_norm) vs 1/λ in continuum regions (0.50-0.70, 1.25-1.35, 2.20-2.50 μm)
 - Weathering columns added via `_migrate_add_columns()` in db.py — ALTER TABLE IF NOT EXISTS pattern
 - Deweathered BLOB stored alongside original reflectance — band_analysis can prefer deweathered when available
+- SsODNet ingest: `from prospector.ingest.ssodnet import ingest_ssodnet, ingest_ssodnet_json, parse_ssocard`
+- SsODNet API: `https://ssp.imcce.fr/webservices/ssodnet/api/ssocard.php?q=<identifier>` — returns JSON with parameters.physical.{mass,density,thermal_inertia,taxonomy} and parameters.dynamical.{delta_v}
+- SsODNet properties stored in `ssodnet_properties` table — mass_kg, density_kgm3, thermal_inertia, taxonomy_class/scheme/complex, delta_v_km_s
+- SsODNet value extraction: `_safe_float()` handles both plain numbers and `{"value": X, "error": {...}}` dicts
+- SsODNet supports both live API (`ingest_ssodnet(ids, conn)`) and pre-downloaded JSON (`ingest_ssodnet_json(path, conn)`)
 - Curve matching: `from prospector.spectral.curve_match import find_analogs, match_all, match_spectrum`
 - find_analogs(asteroid_id, conn, top_n=5) returns list of dicts with wmse, rho, scale_factor, taxonomy_weight
 - match_spectrum(wl_ast, refl_ast, wl_lab, refl_lab) resamples to overlap, applies free scaling, computes WMSE + ρ
@@ -630,4 +638,74 @@ Started: 2026-02-23
   - q_au derived from a*(1-e) when not provided explicitly — explicit q from orbits table preferred
   - Factor values: q=0.2→0.04, q=0.5→0.31, q=0.6→0.50, q=0.8→0.83, q=1.0→1.00
   - `from prospector.scoring.scorer import compute_thermal_depletion_factor`
+---
+
+## 2026-02-24 — near-earth-0wf: ssodnet-ingest
+- Implemented SsODNet (IMCCE Solar System Open Database Network) supplementary data ingestion
+- Created `prospector/ingest/ssodnet.py`: REST API client (`fetch_ssocard`), JSON parser (`parse_ssocard`), two ingestion paths (live API and pre-downloaded JSON)
+- Added `ssodnet_properties` table to `prospector/db.py`: mass, density, thermal inertia, taxonomy, delta-v
+- Files changed: `prospector/db.py`, `prospector/ingest/ssodnet.py`, `tests/test_db.py`, `tests/test_ingest_ssodnet.py`
+- Tests: 37 new tests (unit tests for helpers, parser tests, JSON ingestion, mocked API tests, schema tests)
+- **Learnings for future iterations:**
+  - SsODNet API uses `{value: X, error: {min: -Y, max: Y}}` format — `_safe_float()` must handle both dicts and plain numbers
+  - SsODNet ssoCard response nests under `parameters.physical.*` and `parameters.dynamical.*`
+  - Mass is in kg, density in kg/m³, thermal_inertia in J/m²/s^0.5/K — all SI units
+  - Taxonomy includes class, scheme (e.g., "Mahlke"), complex, and waverange
+  - Delta-v pre-computed by SsODNet using Taylor+2018 method — useful supplementary accessibility metric
+  - Rate limiting at 0.5s between requests is polite for IMCCE servers
+  - `INSERT OR REPLACE` pattern works for ssodnet_properties (same as other ingest modules)
+---
+
+## 2026-02-24 — near-earth-yk5: literal-types
+- Defined `ScoringMode = Literal['earth_return', 'in_space']` and `ObservationType = Literal['vnir_spectroscopy', 'vis_spectroscopy', 'radar', 'albedo']` in `prospector/schemas.py`
+- Updated Pydantic models: `ScoringResult.score_mode` and `EVOIResultSchema.best_observation` use Literal types
+- Updated `EVOIResult` dataclass `best_observation` field to use `ObservationType`
+- Annotated all `mode` parameters in `scorer.py` and `evoi.py` with `ScoringMode`
+- Annotated `_score_distribution`, `compute_evoi`, `compute_evoi_for_asteroid`, `rank_all` mode params
+- Added `tests/test_literal_types.py` with 6 tests: valid/invalid mode, valid/invalid observation, integration tests for `score_asteroid` and `compute_evoi`
+- Fixed pre-existing `max(..., key=dict.get)` mypy errors in both scorer.py and evoi.py (replaced with lambda)
+- Fixed `compute_evoi` return type from `dict[str, float]` to `dict[str, Any]` (contains mixed types)
+- Files changed: `prospector/schemas.py`, `prospector/scoring/scorer.py`, `prospector/scoring/evoi.py`, `tests/test_literal_types.py`
+- **Learnings for future iterations:**
+  - Adding type annotations to previously fully-untyped functions causes mypy to analyze their bodies, surfacing many cascading `no-untyped-call` errors from other untyped functions. The pre-existing mypy error count on these files rose from 4 to ~58, all cascading issues.
+  - `max(dict, key=dict.get)` is a mypy arg-type error — use `key=lambda k: dict[k]` instead
+  - Literal types defined in `schemas.py` are the single source of truth; import `ScoringMode`/`ObservationType` from there
+  - Pydantic validates Literal types at runtime — invalid strings raise `ValidationError` with clear messages
+---
+
+## 2026-02-24 — near-earth-m6g: deterministic-snapshots
+- Created tests/test_deterministic_snapshots.py with 13 snapshot tests
+- Targets covered: taxonomy_prior, score_asteroid (Granvik + M-type), compute_evoi, full pipeline (score_all + rank_all)
+- All snapshot values generated with np.random.default_rng(42) and inline expected dicts
+- Tolerance: rel=1e-12 (bit-identical for seeded MC)
+- Verified perturbation detection: changing _MOID_SCALE breaks accessibility snapshot
+- Files changed: tests/test_deterministic_snapshots.py (new, 240 lines)
+- **Learnings for future iterations:**
+  - score_all and rank_all both use internal seed=42, so pipeline replays are deterministic without explicit RNG passing
+  - EVOI values can be 0.0 when expected_std_post >= std_prior (clipped by max(0.0, ...))
+  - Full pipeline test requires separate DB instances for repeated runs since score_all writes to scores table
+  - Pre-existing: hypothesis module not installed, test_properties.py collection fails (unrelated)
+---
+
+## 2026-02-24 — near-earth-qfo: metamorphic-relations
+- Added 11 Hypothesis metamorphic relation tests in `TestMetamorphicRelations` class
+- Covers all 8 specified MRs: diameter/MOID monotonicity, score non-negative, thermal depletion at score level, posterior validity (4 tests), confidence monotonicity, VNIR>vis concentration, EVOI bounded by std
+- Tests use paired RNG seeds for fair comparison, class-level config loading, `deadline=None` for EVOI
+- Files changed: tests/test_properties.py (added ~230 lines, TestMetamorphicRelations class + new imports)
+- **Learnings for future iterations:**
+  - EVOI MC estimates are unreliable at low n_samples (50). With uniform prior and certain RNG seeds, EVOI computes as 0 because noise pushes expected_std_post > std_prior. Test mathematical prerequisites (confidence, posterior concentration) rather than direct EVOI comparison.
+  - `_score_distribution` in evoi.py has a performance bug: calls `score_asteroid` (full MC run) then runs its OWN MC loop, doubling the work. The `score_asteroid` result is unused.
+  - For C-type pure prob_vector, only water has nonzero recoverability (no PGM/iron/olivine/pyroxene for C). This makes thermal depletion monotonicity exact (not just statistical).
+  - `hypothesis` package was not installed; needed `pip install hypothesis` first.
+---
+
+## 2026-02-24 — near-earth-737: jwst-water-detection
+- Added test suite for JWST 6μm molecular water detection ingestion (47 tests)
+- Fixed mypy type annotation issues in `prospector/ingest/jwst_water.py` (added `Any` annotations to `_safe_float`, `_safe_int`, `_parse_bool`; added explicit `dict[str, str | None]` annotation to `_resolve_columns`)
+- Files changed: `prospector/ingest/jwst_water.py` (type fixes), `tests/test_ingest_jwst_water.py` (new)
+- Tests cover: helper functions (_safe_float, _safe_int, _parse_bool, _resolve_columns), CSV ingestion (basic, designation lookup, aliases, idempotent re-ingest, error cases), JSON ingestion, schema validation, designation lookup
+- **Learnings for future iterations:**
+  - JWST water data is sparse (~4 asteroids now, 30+ in Cycle 2+) — ingestion handles curated CSV/JSON, not bulk catalogs
+  - Column alias resolution pattern (`_resolve_columns` + `_COLUMN_ALIASES`) is reusable across ingest modules
+  - Non-detections (detection=false) should be stored for completeness — negative results are scientifically valuable
 ---
