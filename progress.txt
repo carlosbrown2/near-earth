@@ -28,6 +28,7 @@ Started: 2026-02-23
 - Entity resolver: `from prospector.ingest.entity_resolver import resolve` — takes any identifier string + optional conn, returns ResolvedID(asteroid_id, designation, packed, source)
 - MITHNEOS ingest: `from prospector.ingest.mithneos import ingest_mithneos_dir` — takes dirpath + conn, returns spectrum count
 - Spectral ingest pattern: read file → parse filename for identity → resolve to asteroid_id → FK check → store as numpy BLOBs
+- Scoring modifiers: global modifiers (spin) multiply composite_score; material-specific modifiers (thermal depletion) multiply grade_frac inside the MC material loop
 - Hapke model: `from prospector.spectral.hapke_model import model_asteroid, forward_model, fit_spectrum`
 - Hapke endmembers: Endmember dataclass with n, k_baseline, bands (Gaussian absorption); default set OLIVINE/PYROXENE/PLAGIOCLASE/TROILITE/FE_NI_METAL
 - Forward model parameter vector: [4 fracs, 5 grain_sizes, 1 smfe] = 10 params; metal frac derived from 1-sum
@@ -612,4 +613,21 @@ Started: 2026-02-23
   - Binary suspects: P > 6.0 hr AND amplitude > 0.7 mag — high amplitude from elongated shape or eclipsing binary
   - `from prospector.ingest.lcdb import ingest_lcdb, classify_spin`
   - Modifier is multiplicative on composite_score, not additive — preserves relative ranking among similarly-structured bodies
+---
+
+## 2026-02-24 — near-earth-6v8: thermal-depletion-filter
+- Added `compute_thermal_depletion_factor(q_au)` to `prospector/scoring/scorer.py`
+- Logistic sigmoid on perihelion distance: center=0.6 AU, steepness=8, safe above 1.0 AU
+- Applied as multiplicative penalty to water grades only inside MC loop — PGM/iron/silicate unaffected
+- Added `q_au` parameter to `score_asteroid()`; auto-derived from a*(1-e) when not explicit
+- Updated `score_all()` to fetch `o.q` from orbits table and pass to scorer
+- Returns `thermal_depletion_factor` in result dict
+- 10 new tests in `tests/test_scoring_scorer.py`: unit tests for factor function + integration tests
+- Files changed: `prospector/scoring/scorer.py`, `tests/test_scoring_scorer.py`
+- **Learnings for future iterations:**
+  - Material-specific modifiers go inside the MC material loop (unlike spin_modifier which is global)
+  - `if material == "water": grade_frac *= thermal_depl` — selective penalty pattern
+  - q_au derived from a*(1-e) when not provided explicitly — explicit q from orbits table preferred
+  - Factor values: q=0.2→0.04, q=0.5→0.31, q=0.6→0.50, q=0.8→0.83, q=1.0→1.00
+  - `from prospector.scoring.scorer import compute_thermal_depletion_factor`
 ---
