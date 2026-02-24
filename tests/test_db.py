@@ -12,6 +12,7 @@ EXPECTED_TABLES = sorted([
     "asteroids",
     "band_analysis",
     "cnn_mineral",
+    "hapke_modeling",
     "lab_spectra",
     "orbits",
     "pgm_convergence",

@@ -155,6 +155,30 @@ CREATE TABLE IF NOT EXISTS scores (
     composite_score   REAL,
     score_mode        TEXT                -- 'earth_return' or 'in_space'
 );
+
+-- Hapke radiative transfer modeling results (Stage 3B, top-N candidates)
+CREATE TABLE IF NOT EXISTS hapke_modeling (
+    asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    olivine_frac      REAL,               -- olivine area fraction
+    pyroxene_frac     REAL,               -- orthopyroxene area fraction
+    plagioclase_frac  REAL,               -- plagioclase area fraction
+    troilite_frac     REAL,               -- troilite area fraction
+    metal_frac        REAL,               -- Fe-Ni metal area fraction
+    olivine_grain_um  REAL,               -- olivine grain size (um)
+    pyroxene_grain_um REAL,               -- pyroxene grain size (um)
+    plagioclase_grain_um REAL,            -- plagioclase grain size (um)
+    troilite_grain_um REAL,               -- troilite grain size (um)
+    metal_grain_um    REAL,               -- metal grain size (um)
+    smfe_fraction     REAL,               -- SMFe volume fraction
+    fit_rmse          REAL,               -- RMS residual of best fit
+    fit_rho           REAL,               -- Pearson correlation coefficient
+    olivine_unc       REAL,               -- olivine fraction 1-sigma uncertainty
+    pyroxene_unc      REAL,               -- pyroxene fraction uncertainty
+    metal_unc         REAL,               -- metal fraction uncertainty
+    smfe_unc          REAL,               -- SMFe fraction uncertainty
+    n_bootstrap       INTEGER DEFAULT 0,  -- bootstrap iterations run
+    notes             TEXT
+);
 """
 
 # Index definitions for common query patterns
