@@ -1,0 +1,331 @@
+# Confidence Scoring Configuration
+# Research bead: near-earth-f4d (confidence-formula)
+# Defines the 8-factor confidence formula for the composite mining scorer.
+#
+# Formula: Weighted geometric mean of bounded factors
+#   confidence = prod_i( max(floor, c_i) ^ w_i )   where sum(w_i) = 1
+#
+# Design rationale (Option A from task spec):
+#   - Geometric mean gives a multiplicative "veto" property: one poor factor
+#     penalizes the whole score, which is physically correct (a classification
+#     based solely on visible spectra should not get high confidence just
+#     because it has great SNR).
+#   - Floor prevents zero-collapse from truly missing data.
+#   - Consumers are ranked lists; sensible orderings matter, not precise
+#     probabilistic interpretation.
+#
+# Validation: Worked examples for Itokawa, Bennu, Psyche, Eros, and a
+# poorly-characterized NEO are at the bottom of this file.
+
+metadata:
+  description: >
+    8-factor confidence formula for the Asteroid Mining Prospector scorer.
+    Each factor is normalized to [0, 1] and combined via weighted geometric
+    mean. The formula modulates the composite mining score, so that
+    well-characterized asteroids rank higher than poorly-known ones.
+  formula_type: weighted_geometric_mean
+  floor: 0.05
+  version: "1.0"
+  references:
+    - "Mahlke et al. (2022) — MCFA probabilistic taxonomy"
+    - "Korda et al. (2023) — CNN mineral quantification"
+    - "Dunn et al. (2010) — classical band analysis calibration"
+    - "Carry (2012) — bulk densities and taxonomy statistics"
+
+# All weights must sum to 1.0
+# PGM convergence is included for all asteroids; non-PGM default to 0.5 (neutral)
+factors:
+
+  # --- Factor 1: Taxonomy Entropy ---
+  # Shannon entropy of Mahlke 17-class probability vector
+  # Low entropy = confident classification = high factor value
+  taxonomy_entropy:
+    weight: 0.20
+    normalization: "1 - H / H_max"
+    H_max: 4.087  # log2(17), entropy of uniform distribution
+    description: >
+      Shannon entropy of the Mahlke 2022 MCFA 17-class probability vector.
+      H = -sum(p_i * log2(p_i)) for non-zero p_i.
+      Low entropy means the classifier is confident in one class.
+    default_when_missing: 0.05  # no taxonomy = minimum confidence
+    source: "Mahlke et al. (2022), Eq. 12"
+
+  # --- Factor 2: Wavelength Coverage ---
+  # Dominant factor — determines which spectral analyses are possible
+  wavelength_coverage:
+    weight: 0.25
+    normalization: lookup
+    lookup:
+      vnir_albedo: 1.00    # Full 0.45-2.45 um + albedo pV
+      vnir: 0.85           # Full VNIR without albedo
+      nir_albedo: 0.70     # NIR-only (0.8-2.5 um) + albedo
+      nir_only: 0.60       # NIR-only without albedo
+      vis_albedo: 0.40     # Visible (Gaia/SMASS) + NEOWISE albedo
+      vis_only: 0.25       # Visible-only (Gaia)
+      albedo_only: 0.15    # Albedo but no spectra (Granvik prior only)
+      none: 0.05           # No spectral or albedo data
+    description: >
+      The key jump is at "has NIR" vs "no NIR" — that's where Band I/II
+      centers, BAR, and mineralogical calibrations become available.
+      Albedo resolves the X-complex degeneracy (M vs E vs P).
+    determination_logic: >
+      wl_max >= 2.0 um AND wl_min <= 0.6 um => vnir
+      wl_max >= 2.0 um AND wl_min > 0.6 um  => nir_only
+      wl_max < 2.0 um AND wl_min <= 0.6 um  => vis_only
+      Append "_albedo" if physical_properties.albedo_pv IS NOT NULL.
+      "albedo_only" if no spectra but albedo exists.
+      "none" if nothing.
+    default_when_missing: 0.05
+
+  # --- Factor 3: Signal-to-Noise Ratio ---
+  snr:
+    weight: 0.12
+    normalization: "min(1.0, SNR / snr_good)"
+    snr_good: 50.0
+    description: >
+      Saturates at SNR=50 (generous — 'good' quality threshold in
+      preprocessing is 25). Higher SNR gives diminishing returns.
+      MITHNEOS typical range: 20-150.
+    default_when_missing: 0.25  # pessimistic for unknown SNR
+    source: "Preprocessing quality thresholds (snr >= 25 for 'good')"
+
+  # --- Factor 4: Number of Independent Observations ---
+  n_observations:
+    weight: 0.08
+    normalization: "min(1.0, N / n_saturate)"
+    n_saturate: 3
+    description: >
+      Number of independent spectral observations (count of spectra rows).
+      Saturates at 3 — diminishing returns beyond that for confidence
+      (though more observations are always better for analysis).
+    default_when_missing: 0.05  # no observations
+    source: "General statistical principle"
+
+  # --- Factor 5: Taxonomy-Analog Concordance ---
+  # Does the best meteorite analog match the taxonomy classification?
+  taxonomy_analog_concordance:
+    weight: 0.12
+    normalization: lookup
+    scores:
+      concordant: 1.0    # exact expected match
+      partial: 0.6       # related but not primary expected type
+      discordant: 0.2    # unexpected match (may indicate misclassification)
+      no_analog: 0.3     # no analog matching performed or no lab spectra
+    concordance_map:
+      # Mahlke class -> list of concordant RELAB meteorite groups
+      S:  ["Ordinary Chondrite"]
+      Q:  ["Ordinary Chondrite"]
+      V:  ["HED", "Eucrite", "Diogenite", "Howardite"]
+      A:  ["Pallasite", "Brachinite"]
+      L:  ["Ordinary Chondrite"]
+      K:  ["Ordinary Chondrite", "Carbonaceous Chondrite"]
+      O:  ["Ordinary Chondrite"]
+      R:  ["Ordinary Chondrite"]
+      C:  ["Carbonaceous Chondrite"]
+      B:  ["Carbonaceous Chondrite"]
+      Ch: ["Carbonaceous Chondrite"]
+      D:  ["Carbonaceous Chondrite"]
+      P:  ["Carbonaceous Chondrite"]
+      M:  ["Iron", "Stony-Iron", "Enstatite Chondrite"]
+      X:  ["Iron", "Enstatite Chondrite", "Stony-Iron"]
+      E:  ["Enstatite Chondrite", "Aubrite"]
+      Z:  []  # unclassifiable — any match is concordant
+    partial_matches:
+      # Pairs where meteorite type is physically plausible but not primary
+      S:  ["Iron", "Stony-Iron", "Pallasite"]
+      M:  ["Carbonaceous Chondrite"]
+      K:  ["Enstatite Chondrite"]
+    description: >
+      Cross-validation of two independent classification methods:
+      spectral taxonomy and meteorite analog matching. High concordance
+      indicates both methods agree on the composition.
+    default_when_missing: 0.3
+    source: "TAXONOMY_METEORITE_MAP from curve_match.py"
+
+  # --- Factor 6: Method Agreement (classical vs CNN) ---
+  method_agreement:
+    weight: 0.10
+    normalization: "max(floor, 1 - abs(classical_ol_opx - cnn_ol_opx) / max_disagreement)"
+    max_disagreement: 0.50
+    description: >
+      Compares ol/(ol+opx) ratio from Dunn et al. (2010) classical
+      calibration against Korda et al. (2023) CNN prediction.
+      Only available for S-complex with full VNIR coverage.
+      10 pp difference -> 0.80; 20 pp -> 0.60; 50+ pp -> floor.
+    agreement_thresholds:
+      good: 0.10     # <= 10 pp difference
+      fair: 0.20     # <= 20 pp difference
+      poor: 0.50     # > 20 pp difference
+    default_when_missing: 0.5  # neutral when only one method available
+    source: "Korda et al. (2023), Table 3 validation RMSE"
+
+  # --- Factor 7: Supplementary Data Availability ---
+  supplementary_data:
+    weight: 0.08
+    normalization: "sum(available_i * weight_i) / sum(weight_i)"
+    signals:
+      albedo_pv:
+        weight: 1.0
+        description: "NEOWISE visible geometric albedo"
+      radar_albedo:
+        weight: 2.0
+        description: "Arecibo/Goldstone radar albedo (strong PGM indicator)"
+      thermal_inertia:
+        weight: 1.5
+        description: "Dedicated TPM (independent of spectroscopy)"
+      polarimetry:
+        weight: 1.0
+        description: "Optical polarimetry (Belskaya et al. 2022)"
+      lightcurve:
+        weight: 0.5
+        description: "LCDB rotation period and amplitude"
+    description: >
+      Incremental confirmation from non-spectral data sources.
+      Radar albedo is weighted highest because it is the strongest
+      single indicator for metallic surface composition.
+    default_when_missing: 0.05
+    source: "PRD Stage 5 signal table"
+
+  # --- Factor 8: PGM Convergence (Stage 5) ---
+  pgm_convergence:
+    weight: 0.05
+    normalization: "signal_count / max_signals"
+    max_signals: 6
+    description: >
+      Number of converging signals from Stage 5 PGM identification,
+      normalized by maximum possible. Only meaningful for PGM candidates
+      (Tier 1-4, Tier S). For non-PGM asteroids, defaults to 0.5 (neutral).
+    default_when_missing: 0.5  # neutral for non-PGM asteroids
+    applicable_tiers:
+      - "Tier 1"
+      - "Tier 2"
+      - "Tier 3"
+      - "Tier 4"
+      - "Tier S"
+    source: "prospector/spectral/pgm_convergence.py"
+
+# --- Implementation Specification ---
+implementation:
+  function_signature: >
+    compute_confidence(
+        asteroid_id: int,
+        conn: sqlite3.Connection,
+        config: dict | None = None,
+    ) -> float
+  input_sources:
+    taxonomy_entropy: "taxonomy.prob_vector (BLOB -> np.frombuffer -> Shannon entropy)"
+    wavelength_coverage: "spectra.wl_min, spectra.wl_max, physical_properties.albedo_pv"
+    snr: "spectra.snr_estimate (best spectrum)"
+    n_observations: "COUNT(spectra.spectrum_id) WHERE asteroid_id = ?"
+    taxonomy_analog_concordance: "taxonomy.primary_class + curve_match.find_analogs()[0].meteorite_group"
+    method_agreement: "band_analysis.ol_opx_ratio vs cnn_mineral.ol_pct/(ol_pct+opx_pct)"
+    supplementary_data: "physical_properties.*, pgm_convergence.radar_albedo"
+    pgm_convergence: "pgm_convergence.signal_count, pgm_convergence.pgm_tier"
+  output: >
+    Single float in [floor^sum_weights, 1.0] range ≈ [0.05, 1.0].
+    Stored in scores table (score_all uses this as the confidence multiplier).
+
+# --- Worked Examples ---
+# These validate that the formula produces sensible orderings.
+# Sample-return targets should score highest; Gaia-only targets lowest.
+worked_examples:
+
+  itokawa:
+    asteroid_id: 25143
+    description: "S-type, Hayabusa sample return — ground-truth composition known"
+    factor_values:
+      taxonomy_entropy: 0.85     # low entropy, confident S-type
+      wavelength_coverage: 1.00  # full VNIR (MITHNEOS) + NEOWISE albedo
+      snr: 1.00                  # high SNR MITHNEOS observations
+      n_observations: 1.00       # multiple surveys (SMASS + MITHNEOS + Gaia)
+      taxonomy_analog_concordance: 1.00  # S-type + OC analog = concordant
+      method_agreement: 0.80     # both classical and CNN available, good agreement
+      supplementary_data: 0.50   # albedo + lightcurve, no radar
+      pgm_convergence: 0.50      # Tier S candidate (OC metal)
+    expected_confidence: 0.82    # approximate geometric mean
+    expected_ranking: "top tier"
+
+  bennu:
+    asteroid_id: 101955
+    description: "B-type, OSIRIS-REx sample return — ground-truth composition known"
+    factor_values:
+      taxonomy_entropy: 0.90     # confident B-type
+      wavelength_coverage: 1.00  # full VNIR + albedo
+      snr: 1.00                  # high SNR
+      n_observations: 1.00       # multiple observations
+      taxonomy_analog_concordance: 1.00  # B-type + CC analog = concordant
+      method_agreement: 0.50     # not applicable (B-type, no CNN)
+      supplementary_data: 0.75   # albedo + radar + thermal
+      pgm_convergence: 0.50      # not a PGM candidate
+    expected_confidence: 0.81
+    expected_ranking: "top tier"
+
+  psyche:
+    asteroid_id: 16
+    description: "M-type, radar-bright — PGM candidate, NASA mission target"
+    factor_values:
+      taxonomy_entropy: 0.70     # M-type with some X ambiguity
+      wavelength_coverage: 0.70  # NIR + albedo
+      snr: 0.90                  # good SNR
+      n_observations: 0.67       # ~2 independent observations
+      taxonomy_analog_concordance: 1.00  # M-type + iron analog = concordant
+      method_agreement: 0.50     # not applicable (M-type, no Dunn/CNN)
+      supplementary_data: 0.58   # albedo + radar (2/6 weighted)
+      pgm_convergence: 0.67     # Tier 2 PGM (4/6 signals)
+    expected_confidence: 0.68
+    expected_ranking: "upper tier"
+
+  eros:
+    asteroid_id: 433
+    description: "S-type, NEAR Shoemaker visited — well-studied"
+    factor_values:
+      taxonomy_entropy: 0.80     # confident S-type
+      wavelength_coverage: 1.00  # full VNIR + albedo
+      snr: 1.00                  # high quality
+      n_observations: 1.00       # extensively observed
+      taxonomy_analog_concordance: 1.00  # S-type + OC = concordant
+      method_agreement: 0.70     # classical available, CNN likely
+      supplementary_data: 0.42   # albedo + radar (some), no polarimetry
+      pgm_convergence: 0.50      # not primarily PGM target
+    expected_confidence: 0.77
+    expected_ranking: "upper tier"
+
+  gaia_only_mba:
+    asteroid_id: 0
+    description: "Generic MBA with only Gaia visible spectrum, no albedo"
+    factor_values:
+      taxonomy_entropy: 0.50     # moderate entropy (X-complex ambiguous)
+      wavelength_coverage: 0.25  # visible-only, no albedo
+      snr: 0.60                  # moderate SNR
+      n_observations: 0.33       # single Gaia observation
+      taxonomy_analog_concordance: 0.30  # no analog matching (no NIR)
+      method_agreement: 0.50     # not applicable
+      supplementary_data: 0.05   # nothing beyond Gaia
+      pgm_convergence: 0.50      # not assessed
+    expected_confidence: 0.31
+    expected_ranking: "lower tier"
+
+  uncharacterized_neo:
+    asteroid_id: 0
+    description: "NEO with only orbital elements, no spectral data at all"
+    factor_values:
+      taxonomy_entropy: 0.05     # no taxonomy
+      wavelength_coverage: 0.05  # none
+      snr: 0.25                  # unknown
+      n_observations: 0.05       # none
+      taxonomy_analog_concordance: 0.30  # no analog
+      method_agreement: 0.50     # not applicable
+      supplementary_data: 0.05   # nothing
+      pgm_convergence: 0.50      # not assessed
+    expected_confidence: 0.10
+    expected_ranking: "bottom tier"
+
+# Ordering verification:
+# Itokawa (0.82) > Bennu (0.81) > Eros (0.77) > Psyche (0.68)
+#   > Gaia-only (0.31) > Uncharacterized (0.10)
+#
+# This ordering is physically sensible:
+# - Sample-return targets have highest confidence (ground truth)
+# - Well-studied targets with full VNIR are high
+# - Visible-only targets are substantially lower
+# - Uncharacterized NEOs have minimal confidence
