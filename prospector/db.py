@@ -174,6 +174,25 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes if they don't already exist."""
     conn.executescript(SCHEMA_SQL)
     conn.executescript(INDEX_SQL)
+    # Schema migrations — add columns that weren't in the original DDL
+    _migrate_add_columns(conn)
+
+
+def _migrate_add_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after initial schema. Safe to re-run."""
+    _add_column_if_missing(conn, "spectra", "weathering_cs", "REAL")
+    _add_column_if_missing(conn, "spectra", "deweathered", "BLOB")
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, col_type: str
+) -> None:
+    """Add a column to a table if it doesn't already exist."""
+    cols = {
+        row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 def table_names(conn: sqlite3.Connection) -> list[str]:
