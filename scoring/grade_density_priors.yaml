@@ -1,0 +1,536 @@
+# Grade estimates and density priors for Monte Carlo scoring
+# Source: Literature review per tasks/scoring-grade-and-density-review.md
+# All values as distributions for Monte Carlo sampling: {mean, std, min, max}
+#
+# IMPORTANT: PGM grades use Cannon et al. (2023), NOT Kargel (1994).
+# Cannon showed non-chondritic PGM ratios at high Ir — Pt, Rh, Ru roll over,
+# so maximum PGM contents are lower than Kargel's linear CI-chondrite extrapolation.
+
+metadata:
+  description: >
+    Taxonomy-class lookup tables for the scoring formula components
+    grade_estimate and estimated_mass (via density priors). Used by the
+    Monte Carlo scorer to sample from distributions rather than point estimates.
+  porosity_decision: >
+    Density priors use asteroid BULK densities from Carry (2012), which include
+    macroporosity (rubble-pile structure). This is correct for mass estimation
+    from diameter because diameter measurements give the total volume including
+    void space. Meteorite grain densities (no porosity) are higher and are
+    documented in notes for reference.
+  mahlke_classes:
+    - A
+    - B
+    - C
+    - Ch
+    - D
+    - E
+    - K
+    - L
+    - M
+    - O
+    - P
+    - Q
+    - R
+    - S
+    - V
+    - X
+    - Z
+
+# ---------------------------------------------------------------------------
+# Density priors by Mahlke 2022 taxonomy class
+# Source: Carry (2012, P&SS 73, 98-118) — standard reference for asteroid
+#         bulk densities by spectral class
+# Unit: g/cm³
+# ---------------------------------------------------------------------------
+density_priors:
+  unit: "g/cm3"
+  classes:
+    A:
+      mean: 3.0
+      std: 1.0
+      min: 1.5
+      max: 5.0
+      meteorite_analog: "pallasite, brachinite"
+      source: "Carry2012"
+    B:
+      mean: 1.30
+      std: 0.50
+      min: 0.50
+      max: 2.50
+      meteorite_analog: "CI chondrite, Tagish Lake"
+      source: "Carry2012"
+    C:
+      mean: 1.33
+      std: 0.58
+      min: 0.50
+      max: 2.50
+      meteorite_analog: "CI/CM carbonaceous chondrite"
+      source: "Carry2012"
+    Ch:
+      mean: 1.33
+      std: 0.58
+      min: 0.50
+      max: 2.50
+      meteorite_analog: "CM carbonaceous chondrite (hydrated)"
+      source: "Carry2012"
+    D:
+      mean: 1.29
+      std: 0.67
+      min: 0.30
+      max: 2.50
+      meteorite_analog: "Tagish Lake, interplanetary dust particles"
+      source: "Carry2012"
+    E:
+      mean: 2.50
+      std: 0.80
+      min: 1.00
+      max: 4.00
+      meteorite_analog: "enstatite chondrite (EH, EL)"
+      source: "Carry2012"
+    K:
+      mean: 2.50
+      std: 0.70
+      min: 1.00
+      max: 3.50
+      meteorite_analog: "CV/CK carbonaceous chondrite"
+      source: "Carry2012"
+    L:
+      mean: 2.70
+      std: 0.80
+      min: 1.00
+      max: 4.00
+      meteorite_analog: "anomalous chondrite"
+      source: "Carry2012"
+    M:
+      mean: 3.86
+      std: 1.54
+      min: 1.50
+      max: 7.50
+      meteorite_analog: "iron meteorite (IIIAB, IVA)"
+      source: "Carry2012"
+      note: >
+        Wide range reflects compositional ambiguity: some M-types are metal-rich
+        (rho > 5 g/cm3) while others have significant silicate content. Grain
+        density of iron meteorites is ~7.8 g/cm3; macroporosity reduces bulk density.
+    O:
+      mean: 3.00
+      std: 1.00
+      min: 1.50
+      max: 5.00
+      meteorite_analog: "olivine-dominated achondrite"
+      source: "Carry2012"
+    P:
+      mean: 1.30
+      std: 0.50
+      min: 0.30
+      max: 2.50
+      meteorite_analog: "Tagish Lake, interplanetary dust particles"
+      source: "Carry2012"
+    Q:
+      mean: 2.72
+      std: 0.54
+      min: 1.50
+      max: 3.50
+      meteorite_analog: "ordinary chondrite (fresh surface)"
+      source: "Carry2012"
+    R:
+      mean: 2.60
+      std: 0.50
+      min: 1.50
+      max: 3.50
+      meteorite_analog: "Rumuruti chondrite"
+      source: "Carry2012"
+    S:
+      mean: 2.72
+      std: 0.54
+      min: 1.50
+      max: 4.00
+      meteorite_analog: "ordinary chondrite (H, L, LL)"
+      source: "Carry2012"
+    V:
+      mean: 3.09
+      std: 0.50
+      min: 2.00
+      max: 4.00
+      meteorite_analog: "HED achondrite (eucrite, diogenite, howardite)"
+      source: "Carry2012"
+    X:
+      mean: 3.00
+      std: 1.50
+      min: 1.00
+      max: 7.00
+      meteorite_analog: "ambiguous — could be E, M, or P without albedo"
+      source: "Carry2012"
+      note: "X-type is degenerate without albedo; subsumes E, M, P"
+    Z:
+      mean: 2.00
+      std: 1.00
+      min: 0.50
+      max: 5.00
+      meteorite_analog: "unclassifiable"
+      source: "Carry2012"
+      note: "Broad prior for objects that defy classification"
+
+# ---------------------------------------------------------------------------
+# Grade estimates by target material and taxonomy class
+# All concentrations as distributions for Monte Carlo sampling
+# ---------------------------------------------------------------------------
+grade_estimates:
+
+  # --- Platinum Group Metals (Pt + Pd + Rh + Ru + Os + Ir total) -----------
+  # Source: Cannon et al. (2023, PSJ 4:208) — NOT Kargel (1994)
+  # Key finding: PGMs deviate from chondritic ratios at high Ir. Pt, Rh, Ru
+  # roll over at high Ir concentrations, so max PGM content is ~30-40% lower
+  # than Kargel's CI-chondrite linear extrapolation.
+  pgm:
+    unit: "ppm"
+    description: "Total PGM content (Pt+Pd+Rh+Ru+Os+Ir)"
+    classes:
+      M:
+        mean: 20.0
+        std: 10.0
+        min: 5.0
+        max: 45.0
+        source: "Cannon2023"
+        note: >
+          IIIAB iron meteorite analog. Kargel (1994) estimated 30-65 ppm using
+          linear CI chondrite scaling — revised downward by Cannon due to
+          non-chondritic PGM ratios at high Ir.
+      S:
+        mean: 2.0
+        std: 1.0
+        min: 0.3
+        max: 5.0
+        source: "Cannon2023, Hutchison2004"
+        note: >
+          Bulk PGM in OC: ~10-15 ppm in separated metal phase times ~3-18%
+          metal fraction. H chondrite ~2.7 ppm bulk, L ~1.2, LL ~0.5.
+      Q:
+        mean: 2.0
+        std: 1.0
+        min: 0.3
+        max: 5.0
+        source: "Cannon2023, Hutchison2004"
+        note: "Fresh OC surface; same bulk composition as S-type"
+      X:
+        mean: 10.0
+        std: 8.0
+        min: 0.0
+        max: 45.0
+        source: "Cannon2023"
+        note: "Degenerate class — could be metallic (M) or silicate-poor (E/P); wide prior"
+      E:
+        mean: 3.0
+        std: 2.0
+        min: 0.0
+        max: 10.0
+        source: "Cannon2023"
+        note: "Enstatite chondrite; some kamacite metal with trace PGMs"
+      K:
+        mean: 0.5
+        std: 0.5
+        min: 0.0
+        max: 2.0
+        source: "Cannon2023"
+        note: "CV/CK analog; trace metal with low PGM content"
+
+  # --- Water (H₂O + OH bound in phyllosilicates) --------------------------
+  # Source: Alexander et al. (2012, Science 337, 721-723)
+  water:
+    unit: "wt_pct"
+    description: "Water content (H2O + OH) bound in hydrated minerals"
+    classes:
+      C:
+        mean: 10.0
+        std: 3.0
+        min: 2.0
+        max: 18.0
+        source: "Alexander2012"
+        note: "CI/CM chondrite analog; CI ~13 wt%, CM ~9 wt%"
+      Ch:
+        mean: 12.0
+        std: 2.5
+        min: 5.0
+        max: 18.0
+        source: "Alexander2012"
+        note: "Hydrated C-type; 0.7 um feature confirms phyllosilicates; CM/CI analog"
+      B:
+        mean: 8.0
+        std: 3.0
+        min: 1.0
+        max: 15.0
+        source: "Alexander2012"
+        note: "Tagish Lake analog; variable hydration"
+      D:
+        mean: 5.0
+        std: 3.0
+        min: 0.0
+        max: 12.0
+        source: "Alexander2012"
+        note: "Primitive; Tagish Lake / cometary IDP analog"
+      K:
+        mean: 3.0
+        std: 2.0
+        min: 0.0
+        max: 8.0
+        source: "Alexander2012"
+        note: "CV/CK analog; less hydrated than CI/CM"
+      P:
+        mean: 3.0
+        std: 3.0
+        min: 0.0
+        max: 10.0
+        source: "Alexander2012"
+        note: "Primitive; poorly constrained hydration"
+
+  # --- Metallic iron (free Fe-Ni metal phase) ------------------------------
+  # Sources: Wasson (1999), Hutchison (2004), Dunn et al. (2010)
+  iron:
+    unit: "wt_pct"
+    description: "Metallic iron (Fe-Ni metal phase, not silicate-bound Fe)"
+    classes:
+      M:
+        mean: 85.0
+        std: 10.0
+        min: 60.0
+        max: 95.0
+        source: "Wasson1999"
+        note: "Iron meteorite analog; nearly pure Fe-Ni metal"
+      S:
+        mean: 10.0
+        std: 5.0
+        min: 3.0
+        max: 20.0
+        source: "Dunn2010, Hutchison2004"
+        note: "OC metal fraction: H ~18%, L ~8%, LL ~3%"
+      Q:
+        mean: 10.0
+        std: 5.0
+        min: 3.0
+        max: 20.0
+        source: "Dunn2010, Hutchison2004"
+        note: "Fresh OC surface; same metal fraction as S"
+      E:
+        mean: 20.0
+        std: 10.0
+        min: 5.0
+        max: 35.0
+        source: "Hutchison2004"
+        note: "Enstatite chondrite; EH ~25%, EL ~15% metal"
+      X:
+        mean: 30.0
+        std: 25.0
+        min: 0.0
+        max: 90.0
+        source: "estimated"
+        note: "Degenerate class; wide prior spanning E/M/P range"
+      A:
+        mean: 15.0
+        std: 10.0
+        min: 0.0
+        max: 40.0
+        source: "Hutchison2004"
+        note: "Pallasites ~50% metal, brachinites ~5%; bimodal"
+      V:
+        mean: 2.0
+        std: 1.5
+        min: 0.0
+        max: 5.0
+        source: "Burbine2001"
+        note: "HED achondrites; trace metal"
+
+  # --- Olivine modal abundance ---------------------------------------------
+  # Sources: Dunn et al. (2010), Burbine et al. (2001)
+  olivine:
+    unit: "wt_pct"
+    description: "Olivine modal abundance"
+    classes:
+      S:
+        mean: 40.0
+        std: 10.0
+        min: 20.0
+        max: 60.0
+        source: "Dunn2010"
+        note: "OC calibration: H ~36%, L ~42%, LL ~48%"
+      Q:
+        mean: 40.0
+        std: 10.0
+        min: 20.0
+        max: 60.0
+        source: "Dunn2010"
+        note: "Fresh OC surface; same as S"
+      A:
+        mean: 80.0
+        std: 10.0
+        min: 60.0
+        max: 95.0
+        source: "Hutchison2004"
+        note: "Olivine-dominated: pallasites, brachinites, dunites"
+      O:
+        mean: 70.0
+        std: 15.0
+        min: 40.0
+        max: 95.0
+        source: "estimated"
+        note: "O-type: olivine-rich; few measured analogs"
+      V:
+        mean: 5.0
+        std: 5.0
+        min: 0.0
+        max: 15.0
+        source: "Burbine2001"
+        note: "HED: trace olivine in diogenites only"
+      K:
+        mean: 30.0
+        std: 10.0
+        min: 10.0
+        max: 50.0
+        source: "Dunn2010"
+        note: "CV/CK analog"
+      L:
+        mean: 35.0
+        std: 15.0
+        min: 10.0
+        max: 60.0
+        source: "estimated"
+        note: "Anomalous; poorly constrained"
+      R:
+        mean: 55.0
+        std: 10.0
+        min: 35.0
+        max: 70.0
+        source: "estimated"
+        note: "Rumuruti chondrite; olivine-rich"
+
+  # --- Pyroxene modal abundance (OPX + CPX) --------------------------------
+  # Sources: Dunn et al. (2010), Burbine et al. (2001)
+  pyroxene:
+    unit: "wt_pct"
+    description: "Pyroxene modal abundance (orthopyroxene + clinopyroxene)"
+    classes:
+      S:
+        mean: 25.0
+        std: 8.0
+        min: 10.0
+        max: 40.0
+        source: "Dunn2010"
+        note: "OC calibration: H ~25%, L ~24%, LL ~22%"
+      Q:
+        mean: 25.0
+        std: 8.0
+        min: 10.0
+        max: 40.0
+        source: "Dunn2010"
+        note: "Fresh OC surface; same as S"
+      V:
+        mean: 55.0
+        std: 15.0
+        min: 30.0
+        max: 90.0
+        source: "Burbine2001"
+        note: "Eucrites ~50% pyroxene, diogenites ~90% pyroxene"
+      E:
+        mean: 60.0
+        std: 15.0
+        min: 30.0
+        max: 85.0
+        source: "Hutchison2004"
+        note: "Enstatite chondrite; primarily enstatite (OPX)"
+      K:
+        mean: 15.0
+        std: 8.0
+        min: 5.0
+        max: 30.0
+        source: "Dunn2010"
+        note: "CV/CK analog"
+      L:
+        mean: 20.0
+        std: 10.0
+        min: 5.0
+        max: 40.0
+        source: "estimated"
+        note: "Anomalous; poorly constrained"
+      R:
+        mean: 15.0
+        std: 8.0
+        min: 5.0
+        max: 30.0
+        source: "estimated"
+        note: "Rumuruti; subordinate to olivine"
+
+  # --- S-type subgroup metal fractions (for PGM extraction cost) -----------
+  # Used to estimate mineral processing requirements for S-type PGM recovery.
+  # The scorer applies a recoverability_factor penalty for S-type PGMs because
+  # metal must be separated from silicate matrix.
+  # Source: Hutchison (2004)
+  s_type_metal_fraction:
+    unit: "wt_pct"
+    description: "Metal mass fraction in OC subgroups for extraction cost modeling"
+    subgroups:
+      H:
+        mean: 18.0
+        std: 3.0
+        min: 12.0
+        max: 25.0
+        source: "Hutchison2004"
+        note: "H chondrites; highest metal fraction among OCs"
+      L:
+        mean: 8.0
+        std: 2.0
+        min: 4.0
+        max: 13.0
+        source: "Hutchison2004"
+      LL:
+        mean: 3.0
+        std: 1.5
+        min: 1.0
+        max: 6.0
+        source: "Hutchison2004"
+        note: "LL chondrites; lowest metal fraction — marginal PGM viability"
+
+# ---------------------------------------------------------------------------
+# Cross-check notes (from scoring-grade-and-density-review.md verification)
+# ---------------------------------------------------------------------------
+# 1. PGM M-type: Cannon (2023) IIIAB median ~20 ppm vs Kargel (1994) ~47 ppm
+#    → Cannon is ~60% of Kargel. Confirmed non-chondritic Pt/Ir ratio flattening.
+# 2. Water Ch-type: Alexander (2012) CM2 range 7-13 wt% → our mean 12 wt% is
+#    slightly high (weighted toward hydrated end) but within range.
+# 3. Density M-type: Carry (2012) 3.86 ± 1.54 g/cm³. Psyche sanity check:
+#    D=226km → V=6.04e15 m³ → mass at 3.86 = 2.33e19 kg vs published 2.72e19 kg.
+#    The published mass implies rho ~4.5 g/cm³, within our 1-sigma range.
+#    Using mean+1sigma: (3.86+1.54) = 5.4 → 3.3e19 kg. Bracketed correctly.
+
+# ---------------------------------------------------------------------------
+# References
+# ---------------------------------------------------------------------------
+references:
+  Alexander2012:
+    full: "Alexander C.M.O'D. et al. (2012) Science 337, 721-723"
+    doi: "10.1126/science.1223474"
+    used_for: "Water content in CI and CM chondrites"
+  Burbine2001:
+    full: "Burbine T.H. et al. (2001) MAPS 36, 761-781"
+    doi: "10.1111/j.1945-5100.2001.tb01915.x"
+    used_for: "V-type / HED meteorite compositions"
+  Cannon2023:
+    full: "Cannon K.M. et al. (2023) PSJ 4, 208"
+    doi: "10.3847/PSJ/acf49e"
+    used_for: "Updated PGM concentrations; non-chondritic ratios at high Ir"
+  Carry2012:
+    full: "Carry B. (2012) P&SS 73, 98-118"
+    doi: "10.1016/j.pss.2012.03.009"
+    used_for: "Asteroid bulk densities by spectral class (standard reference)"
+  Dunn2010:
+    full: "Dunn T.L. et al. (2010) Icarus 208, 789-797"
+    doi: "10.1016/j.icarus.2010.02.016"
+    used_for: "OC mineral modal abundances from Band I/II calibration"
+  Hutchison2004:
+    full: "Hutchison R. (2004) Meteorites: A Petrologic, Chemical and Isotopic Synthesis, Cambridge"
+    used_for: "Comprehensive meteorite petrology reference; metal fractions by OC group"
+  Kargel1994:
+    full: "Kargel J.S. (1994) in Resources of Near-Earth Space, Univ. Arizona Press"
+    used_for: "Historical PGM estimates (superseded by Cannon2023; included for comparison)"
+  Wasson1999:
+    full: "Wasson J.T. (1999) GCA 63, 2875-2889"
+    doi: "10.1016/S0016-7037(99)00219-2"
+    used_for: "Iron meteorite group compositions and systematics"
