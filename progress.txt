@@ -748,3 +748,13 @@ Started: 2026-02-23
   - API router pattern: create router in `routers/` module, `app.include_router()` in `create_app()`
   - Use `_build_where()` helper to compose SQL WHERE clauses with parameterized queries
 ---
+
+## 2026-02-24 — near-earth-30y: Asteroid detail endpoint
+- Created `prospector/api/routers/asteroids.py` — GET /v1/asteroids/{asteroid_id}
+- Full JOIN across 8 tables: asteroids, orbits, physical_properties, taxonomy, band_analysis, cnn_mineral, pgm_convergence, rotation_properties, scores
+- Response groups data into structured sections (orbit, taxonomy, etc.); null sections when data unavailable
+- Files: `prospector/api/routers/asteroids.py` (new), `tests/test_api_asteroids.py` (new, 11 tests)
+- **Learnings for future iterations:**
+  - `_row_to_detail()` pattern: flat SQL row → nested dict with null sections for missing JOINs
+  - Check `if flat["key"] is not None` for nullable LEFT JOIN results before building section dicts
+---
