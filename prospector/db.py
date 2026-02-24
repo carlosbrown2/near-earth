@@ -210,6 +210,23 @@ CREATE TABLE IF NOT EXISTS phase_curve (
     taxonomy_hint     TEXT,               -- inferred tax class from G1,G2
     source            TEXT DEFAULT 'MPC'  -- data provenance
 );
+
+-- SsODNet supplementary properties (IMCCE Solar System Open Database Network)
+CREATE TABLE IF NOT EXISTS ssodnet_properties (
+    asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    mass_kg           REAL,               -- mass in kg
+    mass_unc          REAL,               -- mass uncertainty (kg)
+    density_kgm3      REAL,               -- density in kg/m³
+    density_unc       REAL,               -- density uncertainty (kg/m³)
+    thermal_inertia   REAL,               -- thermal inertia (J/m²/s⁰·⁵/K)
+    thermal_inertia_unc REAL,             -- thermal inertia uncertainty
+    taxonomy_class    TEXT,               -- SsODNet best-estimate taxonomy class
+    taxonomy_scheme   TEXT,               -- classification scheme (e.g., 'Mahlke')
+    taxonomy_complex  TEXT,               -- complex (e.g., 'S')
+    taxonomy_waverange TEXT,              -- observation waverange (e.g., 'VISNIR')
+    delta_v_km_s      REAL,               -- delta-v in km/s (Taylor+2018)
+    source            TEXT DEFAULT 'SsODNet'
+);
 """
 
 # Index definitions for common query patterns

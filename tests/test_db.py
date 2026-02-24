@@ -21,6 +21,7 @@ EXPECTED_TABLES = sorted([
     "rotation_properties",
     "scores",
     "spectra",
+    "ssodnet_properties",
     "taxonomy",
 ])
 
