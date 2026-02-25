@@ -530,10 +530,19 @@ def score_asteroid(
     # JWST 6μm water confirmation boost
     jwst_boost = _JWST_WATER_BOOST if jwst_water_confirmed else 1.0
 
-    # Config sections
-    density_priors = config["density_priors"]["classes"]
-    grade_estimates = config["grade_estimates"]
+    # Config arrays for vectorized MC lookups
+    ca = build_config_arrays(config, mode)
     materials = [m for m in SCORED_MATERIALS if m in material_values]
+
+    # Build recoverability arrays from dict (supports caller overrides)
+    recover_arrays: dict[str, np.ndarray] = {}
+    for material in materials:
+        arr = np.zeros(_N_CLASSES, dtype=np.float64)
+        mat_recover = recoverability.get(material, {})
+        for cls_name, factor in mat_recover.items():
+            if cls_name in _CLASS_TO_IDX:
+                arr[_CLASS_TO_IDX[cls_name]] = factor
+        recover_arrays[material] = arr
 
     # Normalise prob vector for sampling
     pv = np.asarray(prob_vector, dtype=np.float64).copy()
@@ -541,72 +550,65 @@ def score_asteroid(
     if pv_sum > 0:
         pv /= pv_sum
     else:
-        pv = np.ones(len(MAHLKE_CLASSES)) / len(MAHLKE_CLASSES)
+        pv = np.ones(_N_CLASSES) / _N_CLASSES
 
+    # --- Vectorized MC sampling ---
+    # 1. Draw all taxonomy class indices at once
+    class_indices = rng.choice(_N_CLASSES, size=n_samples, p=pv)
+
+    # 2. Vectorized density sampling via ConfigArrays
+    density = np.clip(
+        rng.normal(ca.density_mean[class_indices], ca.density_std[class_indices]),
+        ca.density_min[class_indices],
+        ca.density_max[class_indices],
+    )
+
+    # 3. Vectorized mass computation
+    radius_m = diameter_km * 1000.0 / 2.0
+    density_kgm3 = density * 1000.0
+    mass_samples = (4.0 / 3.0) * math.pi * radius_m ** 3 * density_kgm3
+
+    # 4. Per-material grade accumulation (5-material loop)
     sample_scores = np.zeros(n_samples)
-    mass_samples = np.zeros(n_samples)
-    material_totals = {m: 0.0 for m in materials}
+    material_totals: dict[str, float] = {}
+    for material in materials:
+        grade_frac = np.clip(
+            rng.normal(
+                ca.grade_mean[material][class_indices],
+                ca.grade_std[material][class_indices],
+            ),
+            ca.grade_min[material][class_indices],
+            ca.grade_max[material][class_indices],
+        ) * ca.unit_factors[material]
 
-    for i in range(n_samples):
-        # 1. Sample taxonomy class
-        class_idx = rng.choice(len(MAHLKE_CLASSES), p=pv)
-        tax_class = MAHLKE_CLASSES[class_idx]
+        # Water-specific modifiers
+        if material == "water":
+            grade_frac = grade_frac * (thermal_depl * jwst_boost)
 
-        # 2. Sample density
-        if tax_class in density_priors:
-            density = sample_from_dist(density_priors[tax_class], rng)
-        else:
-            density = sample_from_dist(_FALLBACK_DENSITY, rng)
+        recover = recover_arrays[material][class_indices]
+        uv = material_values.get(material, 0.0)
+        value = mass_samples * grade_frac * recover * uv
+        sample_scores += value
+        material_totals[material] = float(np.sum(value))
 
-        # 3. Compute mass
-        mass_kg = estimate_mass_kg(diameter_km, density)
-        mass_samples[i] = mass_kg
-
-        # 4. Sum value across materials
-        total_value = 0.0
-        for material in materials:
-            mat_cfg = grade_estimates.get(material, {})
-            mat_classes = mat_cfg.get("classes", {})
-            mat_unit = mat_cfg.get("unit", "wt_pct")
-
-            if tax_class in mat_classes:
-                grade_raw = sample_from_dist(mat_classes[tax_class], rng)
-                grade_frac = _grade_to_fraction(grade_raw, mat_unit)
-                # Water-specific modifiers
-                if material == "water":
-                    grade_frac *= thermal_depl   # thermal depletion penalty
-                    grade_frac *= jwst_boost     # JWST 6μm confirmation boost
-            else:
-                grade_frac = 0.0
-
-            recover = recoverability.get(material, {}).get(tax_class, 0.0)
-            uv = material_values.get(material, 0.0)
-            value = mass_kg * grade_frac * recover * uv
-            total_value += value
-            material_totals[material] += value
-
-        # 5. Apply confidence, accessibility, and spin modifier
-        sample_scores[i] = total_value * confidence * accessibility * spin_modifier
+    # 5. Apply confidence, accessibility, and spin modifier
+    sample_scores *= confidence * accessibility * spin_modifier
 
     # Aggregate
     composite_score = float(np.mean(sample_scores))
     estimated_mass_kg = float(np.mean(mass_samples))
 
     # Normalise material totals to per-sample means
-    material_contributions = {m: v / n_samples for m, v in material_totals.items()}
+    material_contributions = {m: material_totals.get(m, 0.0) / n_samples for m in materials}
 
     # Dominant target material
     best_material = max(material_contributions, key=lambda k: material_contributions[k])
     best_unit_value = material_values.get(best_material, 0.0)
 
     # Expected grade for dominant material (weighted by taxonomy distribution)
-    best_grade = 0.0
-    mat_cfg = grade_estimates.get(best_material, {})
-    mat_classes = mat_cfg.get("classes", {})
-    mat_unit = mat_cfg.get("unit", "wt_pct")
-    for ci, cls in enumerate(MAHLKE_CLASSES):
-        if cls in mat_classes:
-            best_grade += pv[ci] * _grade_to_fraction(mat_classes[cls]["mean"], mat_unit)
+    best_grade = float(np.sum(
+        pv * ca.grade_mean[best_material] * ca.unit_factors[best_material]
+    ))
 
     result = {
         "composite_score": composite_score,

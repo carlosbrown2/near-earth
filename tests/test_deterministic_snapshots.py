@@ -85,8 +85,8 @@ class TestScoreAsteroidSnapshot:
     """score_asteroid(d=1.0, a=1.5, e=0.3, i=10.0, moid=0.05, seed=42, n=1000)."""
 
     EXPECTED = {
-        "composite_score": 7988086806.079954,
-        "estimated_mass_kg": 1355662696781.752,
+        "composite_score": 5769956793.819951,
+        "estimated_mass_kg": 1324733088938.9656,
         "grade_estimate": 2.267212947812078e-06,
         "target_material": "pgm",
         "unit_value": 50000,
@@ -99,11 +99,11 @@ class TestScoreAsteroidSnapshot:
     }
 
     EXPECTED_CONTRIBUTIONS = {
-        "pgm": 31132284351.884666,
-        "water": 5676227.5733847255,
-        "iron": 6409869403.101304,
-        "olivine": 2057805019.4406676,
-        "pyroxene": 1046949296.8077171,
+        "pgm": 21256860965.16152,
+        "water": 4834733.863960632,
+        "iron": 4898718663.266027,
+        "olivine": 2097065961.8657098,
+        "pyroxene": 1106704199.064434,
     }
 
     def test_exact_output(self, config):
@@ -152,9 +152,9 @@ class TestScoreAsteroidMTypeSnapshot:
     """score_asteroid with 100% M-type, seed=42, n=1000."""
 
     EXPECTED = {
-        "composite_score": 34457737439.635704,
-        "estimated_mass_kg": 254322773303.50085,
-        "grade_estimate": 2e-05,
+        "composite_score": 34196774613.320023,
+        "estimated_mass_kg": 248254549622.81918,
+        "grade_estimate": 1.9999999999999998e-05,
         "target_material": "pgm",
         "unit_value": 50000,
         "accessibility": 0.36787944117144233,
@@ -166,9 +166,9 @@ class TestScoreAsteroidMTypeSnapshot:
     }
 
     EXPECTED_CONTRIBUTIONS = {
-        "pgm": 76607169838.07536,
+        "pgm": 76270273898.25644,
         "water": 0.0,
-        "iron": 17058671693.899359,
+        "iron": 16686197125.040955,
         "olivine": 0.0,
         "pyroxene": 0.0,
     }
@@ -211,14 +211,14 @@ class TestComputeEVOISnapshot:
     """compute_evoi(d=1.0, a=1.5, e=0.3, i=10.0, moid=0.05, seed=42, n=200)."""
 
     EXPECTED = {
-        "score_mean": 6354458197.133442,
-        "score_std": 22983458307.414104,
-        "evoi_vnir": 0.0,
-        "evoi_vis": 12455857845.245924,
-        "evoi_radar": 16085821141.78535,
-        "evoi_albedo": 0.0,
-        "best_observation": "radar",
-        "best_evoi": 16085821141.78535,
+        "score_mean": 10366826446.17176,
+        "score_std": 34964618747.57021,
+        "evoi_vnir": 1706791754.0797462,
+        "evoi_vis": 24820061931.03283,
+        "evoi_radar": 19048681444.827774,
+        "evoi_albedo": 17821535809.225956,
+        "best_observation": "vis_spectroscopy",
+        "best_evoi": 24820061931.03283,
     }
 
     def test_exact_output(self, config):
@@ -270,11 +270,11 @@ class TestFullPipelineReplay:
 
     # Expected composite scores from score_all (seed=42, n=500)
     EXPECTED_SCORES = {
-        3: 31410619264.921436,
-        5: 23221696523.554543,
-        1: 10488795037.019817,
-        2: 1096031965.3805215,
-        4: 268587666.143565,
+        3: 30392417192.00567,
+        5: 29936106967.55466,
+        1: 7281096991.540525,
+        2: 1136458961.971805,
+        4: 369371308.5993084,
     }
 
     @pytest.fixture

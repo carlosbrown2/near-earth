@@ -909,3 +909,19 @@ Started: 2026-02-23
   - `from prospector.scoring.scorer import ConfigArrays, build_config_arrays`
   - Downstream vectorization bead (near-earth-181) should use these arrays with fancy indexing: `density_mean[class_indices]`
 ---
+
+## 2026-02-25 — near-earth-181: Vectorize score_asteroid inner MC loop
+- Replaced `for i in range(n_samples)` loop in `score_asteroid()` with vectorized numpy operations
+- Pattern: `rng.choice(17, size=n_samples, p=pv)` → fancy-indexed density/grade draws → vectorized mass → 5-material accumulation loop
+- Built recoverability arrays from dict parameter (not ConfigArrays) to preserve caller override support
+- Vectorized `best_grade` computation: `np.sum(pv * ca.grade_mean[material] * ca.unit_factors[material])`
+- Re-captured all snapshot expected values in `test_deterministic_snapshots.py` (RNG draw order changes with vectorization)
+- Files changed: `prospector/scoring/scorer.py`, `tests/test_deterministic_snapshots.py`
+- All 1453 tests pass (including properties, stateful, and snapshots)
+- **Learnings for future iterations:**
+  - Vectorizing changes RNG consumption order (batched vs interleaved) — snapshot re-capture is mandatory
+  - `rng.normal(loc, scale=0.0)` returns `loc` — safe for zero-std entries in ConfigArrays
+  - Custom `recoverability` dict override requires building arrays outside ConfigArrays
+  - 5-material inner loop is acceptable — vectorizing across materials would require 3D arrays for marginal gain
+  - `ca.unit_factors[material]` is equivalent to `_grade_to_fraction()` — multiply instead of divide
+---
