@@ -28,6 +28,7 @@ dev = [
     "hypothesis>=6.0",
     "mypy>=1.0",
     "mutmut>=2.4",
+    "deal>=4.24",
 ]
 
 [tool.pytest.ini_options]

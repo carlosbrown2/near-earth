@@ -16,6 +16,7 @@ Usage:
 import logging
 import sqlite3
 
+import deal
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,10 @@ SNR_GOOD_THRESHOLD = 25.0
 MIN_COVERAGE_GOOD = 1.5
 
 
+@deal.pre(lambda wavelengths, reflectance, *_, **__: len(wavelengths) == len(reflectance),
+          message="wavelengths and reflectance must have same length")
+@deal.pre(lambda wavelengths, *_, **__: len(wavelengths) >= 2,
+          message="need at least 2 wavelength points")
 def resample(
     wavelengths: np.ndarray,
     reflectance: np.ndarray,
@@ -77,6 +82,8 @@ def resample(
     return grid.copy(), refl_out, unc_out
 
 
+@deal.pre(lambda wavelengths, reflectance, *_, **__: len(wavelengths) == len(reflectance),
+          message="wavelengths and reflectance must have same length")
 def normalize(
     wavelengths: np.ndarray,
     reflectance: np.ndarray,

@@ -23,6 +23,7 @@ Usage:
 import math
 from pathlib import Path
 
+import deal
 import numpy as np
 import yaml
 
@@ -131,7 +132,10 @@ def sample_from_dist(dist, rng=None):
     return float(np.clip(val, dist["min"], dist["max"]))
 
 
-def estimate_mass_kg(diameter_km, density_gcm3):
+@deal.pre(lambda diameter_km, density_gcm3: diameter_km >= 0, message="diameter must be non-negative")
+@deal.pre(lambda diameter_km, density_gcm3: density_gcm3 > 0, message="density must be positive")
+@deal.post(lambda result: math.isfinite(result) and result >= 0)
+def estimate_mass_kg(diameter_km: float, density_gcm3: float) -> float:
     """Compute asteroid mass assuming a sphere.
 
     Parameters
@@ -151,7 +155,8 @@ def estimate_mass_kg(diameter_km, density_gcm3):
     return (4.0 / 3.0) * math.pi * radius_m ** 3 * density_kgm3
 
 
-def compute_accessibility(moid_au=None, a=None, e=None):
+@deal.post(lambda result: 0.01 <= result <= 1.0)
+def compute_accessibility(moid_au: float | None = None, a: float | None = None, e: float | None = None) -> float:
     """MOID-based accessibility proxy (0–1 scale).
 
     Uses exponential decay on MOID: lower MOID → higher score.
@@ -181,6 +186,7 @@ def compute_accessibility(moid_au=None, a=None, e=None):
     return float(np.clip(score, 0.01, 1.0))
 
 
+@deal.post(lambda result: 0.01 <= result <= 1.0)
 def compute_confidence(prob_vector):
     """Confidence from taxonomy probability vector entropy.
 
@@ -234,7 +240,8 @@ def compute_spin_modifier(is_monolithic=None, is_binary_suspect=None):
     return 1.0
 
 
-def compute_thermal_depletion_factor(q_au=None):
+@deal.post(lambda result: 0.0 <= result <= 1.0)
+def compute_thermal_depletion_factor(q_au: float | None = None) -> float:
     """Water retention factor based on perihelion distance (Toliou et al. 2021).
 
     Near-Sun dwell time thermally depletes phyllosilicate-bound water.
@@ -282,6 +289,9 @@ def _get_recoverability(config):
     return config.get("recoverability_defaults", DEFAULT_RECOVERABILITY)
 
 
+@deal.pre(lambda diameter_km, *_, **__: diameter_km > 0, message="diameter_km must be positive for scoring")
+@deal.post(lambda result: result["composite_score"] >= 0, message="composite_score must be non-negative")
+@deal.post(lambda result: math.isfinite(result["composite_score"]), message="composite_score must be finite")
 def score_asteroid(
     diameter_km,
     a,

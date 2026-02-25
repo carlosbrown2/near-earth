@@ -10,6 +10,8 @@ BLOB columns store numpy arrays via array.tobytes() / np.frombuffer().
 import sqlite3
 from pathlib import Path
 
+import deal
+
 # Default database path (data/ directory, gitignored)
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "prospector.db"
 
@@ -227,6 +229,19 @@ CREATE TABLE IF NOT EXISTS ssodnet_properties (
     delta_v_km_s      REAL,               -- delta-v in km/s (Taylor+2018)
     source            TEXT DEFAULT 'SsODNet'
 );
+
+-- JWST 6μm molecular water detections (Arredondo et al. 2024)
+CREATE TABLE IF NOT EXISTS jwst_water (
+    asteroid_id       INTEGER PRIMARY KEY REFERENCES asteroids(asteroid_id),
+    water_abundance    REAL,               -- water abundance (μg/g, i.e. ppm by mass)
+    water_abundance_unc REAL,              -- abundance uncertainty
+    band_depth         REAL,               -- 6μm emission feature depth (fractional)
+    band_depth_unc     REAL,               -- band depth uncertainty
+    detection          BOOLEAN NOT NULL,   -- True if water confirmed at 6μm
+    instrument         TEXT,               -- 'JWST/MIRI', 'SOFIA/FORCAST', etc.
+    reference          TEXT,               -- publication reference (e.g., 'Arredondo+2024')
+    source             TEXT DEFAULT 'JWST' -- data provenance
+);
 """
 
 # Index definitions for common query patterns
@@ -243,6 +258,7 @@ CREATE INDEX IF NOT EXISTS idx_lab_spectra_sample ON lab_spectra(sample_id);
 """
 
 
+@deal.post(lambda result: result is not None, message="connection must not be None")
 def get_connection(db_path: Path | str | None = None, *, create: bool = True) -> sqlite3.Connection:
     """Open (and optionally initialize) a SQLite connection.
 
@@ -304,6 +320,8 @@ def _add_column_if_missing(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
+@deal.pre(lambda conn: conn is not None, message="connection must not be None")
+@deal.post(lambda result: isinstance(result, list), message="must return a list")
 def table_names(conn: sqlite3.Connection) -> list[str]:
     """Return sorted list of user table names in the database."""
     rows = conn.execute(

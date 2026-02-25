@@ -7,6 +7,7 @@ that must hold for ALL inputs — not just the examples Ralph happened to pick.
 
 import math
 
+import deal
 import numpy as np
 import pytest
 from hypothesis import given, settings, assume
@@ -566,3 +567,33 @@ class TestMetamorphicRelations:
             rng=np.random.default_rng(seed),
         )
         assert result["best_evoi"] <= result["score_std"] + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Design by Contract — deal.cases() auto-generated tests
+# ---------------------------------------------------------------------------
+
+class TestDealContracts:
+    """Auto-generated test cases from deal contracts.
+
+    deal.cases() uses Hypothesis to generate inputs satisfying @deal.pre
+    contracts, then verifies @deal.post contracts hold for all generated cases.
+    """
+
+    test_estimate_mass_kg_contracts = deal.cases(
+        estimate_mass_kg, count=100,
+        kwargs={"diameter_km": 1.0, "density_gcm3": 3.0},
+    )
+
+    test_compute_accessibility_contracts = deal.cases(
+        compute_accessibility, count=100,
+    )
+
+    test_compute_thermal_depletion_contracts = deal.cases(
+        compute_thermal_depletion_factor, count=100,
+    )
+
+    test_compute_confidence_contracts = deal.cases(
+        compute_confidence, count=50,
+        kwargs={"prob_vector": np.ones(17) / 17.0},
+    )

@@ -17,6 +17,7 @@ import json
 import logging
 import sqlite3
 
+import deal
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ def determine_coverage(wl_min: float, wl_max: float) -> str:
         return "nir_only"
 
 
+@deal.pre(lambda wave, refl, *_, **__: len(wave) == len(refl),
+          message="wave and refl must have same length")
+@deal.pre(lambda wave, *_, **__: len(wave) >= 3,
+          message="need at least 3 wavelength points")
 def classify_spectrum(
     wave: np.ndarray,
     refl: np.ndarray,

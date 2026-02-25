@@ -109,3 +109,21 @@ After schema-design completes, sbdb-ingest, neowise-ingest, validate-classy, and
 ## Codebase Patterns
 
 _Populated by Ralph iterations. Check `progress.txt` for the latest patterns._
+
+### Design by Contract (deal)
+
+Add `@deal.pre` / `@deal.post` decorators to new public functions in `prospector/`:
+
+```python
+import deal
+
+@deal.pre(lambda diameter_km, density_gcm3: diameter_km >= 0, message="diameter must be non-negative")
+@deal.post(lambda result: result >= 0)
+def estimate_mass_kg(diameter_km: float, density_gcm3: float) -> float:
+    ...
+```
+
+- Use `deal.pre` for input domain constraints (physical bounds, array shapes)
+- Use `deal.post` for output invariants (range bounds, finiteness)
+- Add `deal.cases(func, count=N)` in `tests/test_properties.py` to auto-generate tests from contracts
+- Contracts are active in tests, can be disabled in production via `deal.disable(permanent=True)`

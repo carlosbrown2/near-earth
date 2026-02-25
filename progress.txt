@@ -3,6 +3,7 @@ Project: Asteroid Mining Prospector
 Started: 2026-02-23
 
 ## Codebase Patterns
+- Design by Contract: `import deal` — use `@deal.pre` for input domain, `@deal.post` for output invariants. Add `deal.cases(func, count=N)` in `tests/test_properties.py` for auto-generated tests. Contracts active in tests, disable in production with `deal.disable(permanent=True)`.
 - Pipeline CLI: `python -m prospector --stages ingest spectral scoring output --data-dir data/ --mode earth_return`. Use `run_pipeline()` programmatically.
 - FastAPI testing: Create `sqlite3.connect(":memory:", check_same_thread=False)` for test DB. Override `get_db` dependency: `app.dependency_overrides[get_db] = lambda: conn`. Use `TestClient(app)` from `fastapi.testclient`.
 - Hypothesis property tests: Use `deadline=None` for compute-heavy tests (EVOI). Use paired RNG seeds `np.random.default_rng(seed)` for fair monotonicity comparisons. Class-level `_config = load_config()` avoids per-example YAML loading.
@@ -17,6 +18,7 @@ Started: 2026-02-23
 - Database access: `prospector.db.get_connection(":memory:")` for tests, `get_connection()` for default file DB
 - BLOB round-trip: `array.tobytes()` to store, `np.frombuffer(blob, dtype=np.float64)` to read
 - Schema is idempotent (`CREATE TABLE IF NOT EXISTS`) — safe to call `init_schema()` multiple times
+- Mutation testing gate: After closing a bead touching `prospector/`, run `scripts/mutmut-gate.sh prospector/path/to/module.py` — requires <10% surviving mutants
 - SBDB ingest: `from prospector.ingest.sbdb import ingest_sbdb_csv` — takes csv_path + conn, returns row count
 - SPK-ID mapping: numbered asteroids spkid ∈ [2000001,2999999] → asteroid_id = spkid - 2000000; others pass through
 - Use `INSERT OR REPLACE` for idempotent ingestion — safe to re-run on same data
@@ -805,4 +807,37 @@ Started: 2026-02-23
   - Stateful tests with `score_all` need low `n_samples=50` to keep runtime reasonable (50 examples × 15 steps)
   - `conn.execute("INSERT OR REPLACE ...")` handles both new inserts and updates of existing asteroid data
   - prob_vector strategy: generate positive floats list, convert to np.array, divide by sum → guaranteed normalized
+---
+
+## 2026-02-24 — near-earth-a4d: Mutation testing gate (mutmut)
+- Added `mutmut>=2.4` to `[project.optional-dependencies] dev` in pyproject.toml
+- Configured `[tool.mutmut]` with `paths_to_mutate=prospector/`, `runner=pytest -x --tb=no -q`, `tests_dir=tests/`
+- Created `scripts/mutmut-gate.sh`: runs mutmut on a specified module, parses results, fails if survival rate >10%
+- Added mutation testing gate section to `prompt.md` with usage instructions
+- Added 5 tests in `tests/test_mutmut_gate.py`: config validation, script existence/permissions, usage error, missing module error
+- **Learnings for future iterations:**
+  - mutmut writes results to `.mutmut-cache/` directory — may want to gitignore
+  - The gate script treats timeouts and suspicious mutants as "caught" (not survived) — this is the standard convention
+  - Research/tooling beads are exempt from the mutation gate; only beads touching `prospector/` modules need it
+  - The `--no-progress` flag suppresses mutmut's progress bar, cleaner for CI/script output
+---
+
+## 2026-02-24 — near-earth-eib: deal contracts on scorer, db, and spectral modules
+- Added `deal>=4.24` to `[project.optional-dependencies] dev` in pyproject.toml
+- Added `@deal.pre`/`@deal.post` contracts to core functions:
+  - `scorer.py`: estimate_mass_kg (diameter>=0, density>0, mass>=0, finite), compute_accessibility (result in [0.01,1.0]), compute_confidence (result in [0.01,1.0]), compute_thermal_depletion_factor (result in [0,1]), score_asteroid (diameter>0, composite_score>=0, finite)
+  - `db.py`: get_connection (result not None), table_names (conn not None, result is list)
+  - `preprocessing.py`: resample (array length match, >=2 points), normalize (array length match)
+  - `taxonomy.py`: classify_spectrum (array length match, >=3 points)
+  - `band_analysis.py`: analyze_spectrum (array length match, >=10 points), estimate_temperature (result>0)
+- Added `deal.cases()` auto-generated tests in `tests/test_properties.py` (TestDealContracts class)
+- Documented deal contract pattern in CLAUDE.md
+- Files changed: pyproject.toml, prospector/scoring/scorer.py, prospector/db.py, prospector/spectral/preprocessing.py, prospector/spectral/taxonomy.py, prospector/spectral/band_analysis.py, tests/test_properties.py, CLAUDE.md, progress.txt
+- **Learnings for future iterations:**
+  - `deal.pre` lambda must accept same positional args as the function — use `*_`/`**__` to ignore extras
+  - `deal.post` lambda receives only the return value — check it directly
+  - `deal.cases(func, count=N, kwargs={...})` needs kwargs for complex types that Hypothesis can't auto-generate
+  - Contracts are active by default — use `deal.disable(permanent=True)` for production zero-overhead
+  - deal reduced mypy errors by 6 (type annotations on contracted functions trigger analysis of previously-untyped code)
+  - Zero-diameter asteroid is a valid edge case for estimate_mass_kg (returns 0.0) — use `>=0` not `>0`
 ---

@@ -18,6 +18,7 @@ Usage:
 import logging
 import sqlite3
 
+import deal
 import numpy as np
 from scipy.optimize import minimize_scalar
 
@@ -169,6 +170,7 @@ def compute_band_area(wl, cr_refl, left_wl, right_wl):
     return area if area > 0 else None
 
 
+@deal.post(lambda result: result > 0, message="temperature must be positive")
 def estimate_temperature(semi_major_axis_au):
     """Estimate mean surface temperature from semi-major axis.
 
@@ -271,6 +273,10 @@ def dunn_calibration(bar, bic, biic):
     return {"ol_opx_ratio": ol_ratio, "fa_mol_pct": fa, "fs_mol_pct": fs}
 
 
+@deal.pre(lambda wl, refl, *_, **__: len(wl) == len(refl),
+          message="wl and refl must have same length")
+@deal.pre(lambda wl, *_, **__: len(wl) >= 10,
+          message="need at least 10 wavelength points for band analysis")
 def analyze_spectrum(wl, refl, semi_major_axis=None):
     """Perform full band parameter analysis on a single spectrum.
 
