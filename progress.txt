@@ -6,6 +6,7 @@ Started: 2026-02-23
 - Pipeline CLI: `python -m prospector --stages ingest spectral scoring output --data-dir data/ --mode earth_return`. Use `run_pipeline()` programmatically.
 - FastAPI testing: Create `sqlite3.connect(":memory:", check_same_thread=False)` for test DB. Override `get_db` dependency: `app.dependency_overrides[get_db] = lambda: conn`. Use `TestClient(app)` from `fastapi.testclient`.
 - Hypothesis property tests: Use `deadline=None` for compute-heavy tests (EVOI). Use paired RNG seeds `np.random.default_rng(seed)` for fair monotonicity comparisons. Class-level `_config = load_config()` avoids per-example YAML loading.
+- Hypothesis stateful tests: `RuleBasedStateMachine` in `tests/test_stateful.py` — use `@initialize()` for DB setup, `@precondition` for state guards, `note()` for debug logs. Low `n_samples=50` for runtime. `settings(max_examples=50, stateful_step_count=15, deadline=None)`.
 - EVOI computation is expensive (~2.4s per call at n_samples=30). Full `compute_evoi` should be tested with `deadline=None` and modest `max_examples`. Direct EVOI comparison (e.g., EVOI_vnir >= EVOI_vis) is unreliable at low n_samples due to MC noise — test mathematical prerequisites instead.
 - Literal types: `ScoringMode` and `ObservationType` defined in `prospector/schemas.py` — use for all mode/observation parameters
 - Package root: `prospector/` with subpackages `ingest/`, `spectral/`, `scoring/`, `ephemeris/`
@@ -788,4 +789,20 @@ Started: 2026-02-23
 - Used `getattr(np, "trapezoid", np.trapz)` for forward/backward compat
 - NumPy 1.26.4 installed (pre-2.0), so np.trapezoid not yet available
 - Eliminated 25 DeprecationWarning from test suite
+---
+
+## 2026-02-24 — near-earth-piu: Hypothesis stateful testing for ingest→score pipeline
+- Created `tests/test_stateful.py`: RuleBasedStateMachine fuzzing the ingest→score pipeline
+- 7 rules: ingest_full_asteroid, ingest_partial_no_diameter, add_taxonomy, add_physical_properties, score_all_asteroids, score_single_asteroid, update_diameter
+- 6 invariants checked after every step: scores_non_negative, accessibility_bounded, scored_asteroids_exist, taxonomy_vectors_normalized, mass_estimates_non_negative, scores_are_finite
+- Tests interleaved ingests with partial data, repeated scoring in both modes, taxonomy additions, diameter updates
+- Settings: max_examples=50, stateful_step_count=15, deadline=None
+- Files changed: `tests/test_stateful.py` (new)
+- **Learnings for future iterations:**
+  - RuleBasedStateMachine `@initialize()` replaces `__init__` for setup — must reset all state tracking there
+  - `@precondition(lambda self: ...)` guards rules that need prior state (e.g., scoring needs insertions first)
+  - `note(f"...")` from hypothesis logs per-step debug info visible on failure — essential for debugging shrunk examples
+  - Stateful tests with `score_all` need low `n_samples=50` to keep runtime reasonable (50 examples × 15 steps)
+  - `conn.execute("INSERT OR REPLACE ...")` handles both new inserts and updates of existing asteroid data
+  - prob_vector strategy: generate positive floats list, convert to np.array, divide by sum → guaranteed normalized
 ---
