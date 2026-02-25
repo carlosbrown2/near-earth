@@ -11,7 +11,9 @@ from prospector.scoring.scorer import (
     DEFAULT_MATERIAL_VALUES,
     DEFAULT_RECOVERABILITY,
     SCORED_MATERIALS,
+    ConfigArrays,
     _grade_to_fraction,
+    build_config_arrays,
     compute_accessibility,
     compute_confidence,
     compute_thermal_depletion_factor,
@@ -87,6 +89,126 @@ def db_with_asteroids(db):
 
     db.commit()
     return db
+
+
+# ---- ConfigArrays tests -----------------------------------------------------
+
+
+class TestConfigArrays:
+    """Tests for ConfigArrays dataclass and build_config_arrays()."""
+
+    def test_returns_config_arrays_instance(self, config):
+        ca = build_config_arrays(config)
+        assert isinstance(ca, ConfigArrays)
+
+    def test_density_arrays_shape(self, config):
+        ca = build_config_arrays(config)
+        assert ca.density_mean.shape == (17,)
+        assert ca.density_std.shape == (17,)
+        assert ca.density_min.shape == (17,)
+        assert ca.density_max.shape == (17,)
+
+    def test_density_all_classes_populated(self, config):
+        """Every class should have a density entry (YAML covers all 17 + fallback)."""
+        ca = build_config_arrays(config)
+        for i, cls in enumerate(MAHLKE_CLASSES):
+            assert ca.density_mean[i] > 0, f"{cls} density mean should be positive"
+            assert ca.density_std[i] > 0, f"{cls} density std should be positive"
+            assert ca.density_max[i] > ca.density_min[i], f"{cls} max > min"
+
+    def test_density_matches_yaml(self, config):
+        """Spot-check: M-type density mean should be 3.86 from Carry (2012)."""
+        ca = build_config_arrays(config)
+        m_idx = MAHLKE_CLASSES.index("M")
+        assert ca.density_mean[m_idx] == pytest.approx(3.86)
+        assert ca.density_std[m_idx] == pytest.approx(1.54)
+
+    def test_grade_arrays_per_material(self, config):
+        ca = build_config_arrays(config)
+        for material in SCORED_MATERIALS:
+            assert material in ca.grade_mean
+            assert ca.grade_mean[material].shape == (17,)
+            assert ca.grade_std[material].shape == (17,)
+            assert ca.grade_min[material].shape == (17,)
+            assert ca.grade_max[material].shape == (17,)
+
+    def test_grade_zeros_for_missing_classes(self, config):
+        """PGM has no entry for B-type → should be zero."""
+        ca = build_config_arrays(config)
+        b_idx = MAHLKE_CLASSES.index("B")
+        assert ca.grade_mean["pgm"][b_idx] == 0.0
+        assert ca.grade_std["pgm"][b_idx] == 0.0
+
+    def test_grade_matches_yaml_pgm_m(self, config):
+        """Spot-check: PGM M-type mean should be 20.0 ppm (Cannon 2023)."""
+        ca = build_config_arrays(config)
+        m_idx = MAHLKE_CLASSES.index("M")
+        assert ca.grade_mean["pgm"][m_idx] == pytest.approx(20.0)
+        assert ca.grade_std["pgm"][m_idx] == pytest.approx(10.0)
+
+    def test_grade_matches_yaml_water_c(self, config):
+        """Spot-check: Water C-type mean should be 10.0 wt% (Alexander 2012)."""
+        ca = build_config_arrays(config)
+        c_idx = MAHLKE_CLASSES.index("C")
+        assert ca.grade_mean["water"][c_idx] == pytest.approx(10.0)
+
+    def test_unit_factors(self, config):
+        ca = build_config_arrays(config)
+        # PGM is in ppm → factor 1e-6
+        assert ca.unit_factors["pgm"] == pytest.approx(1e-6)
+        # Water is in wt_pct → factor 0.01
+        assert ca.unit_factors["water"] == pytest.approx(0.01)
+        # Iron is in wt_pct → factor 0.01
+        assert ca.unit_factors["iron"] == pytest.approx(0.01)
+
+    def test_recoverability_arrays_shape(self, config):
+        ca = build_config_arrays(config)
+        for material in SCORED_MATERIALS:
+            assert material in ca.recoverability
+            assert ca.recoverability[material].shape == (17,)
+
+    def test_recoverability_matches_defaults(self, config):
+        """Without config overrides, should match DEFAULT_RECOVERABILITY."""
+        ca = build_config_arrays(config)
+        m_idx = MAHLKE_CLASSES.index("M")
+        assert ca.recoverability["pgm"][m_idx] == pytest.approx(0.30)
+        assert ca.recoverability["iron"][m_idx] == pytest.approx(0.80)
+
+    def test_recoverability_zeros_for_missing(self, config):
+        """B-type has no PGM recoverability → should be 0."""
+        ca = build_config_arrays(config)
+        b_idx = MAHLKE_CLASSES.index("B")
+        assert ca.recoverability["pgm"][b_idx] == 0.0
+
+    def test_frozen_dataclass(self, config):
+        """ConfigArrays should be immutable (frozen=True)."""
+        ca = build_config_arrays(config)
+        with pytest.raises(AttributeError):
+            ca.density_mean = np.zeros(17)
+
+    def test_both_modes_same_structure(self, config):
+        """earth_return and in_space should produce same array shapes."""
+        ca_er = build_config_arrays(config, mode="earth_return")
+        ca_is = build_config_arrays(config, mode="in_space")
+        assert ca_er.density_mean.shape == ca_is.density_mean.shape
+        # Density arrays are mode-independent
+        np.testing.assert_array_equal(ca_er.density_mean, ca_is.density_mean)
+        # Grade arrays are mode-independent
+        for m in SCORED_MATERIALS:
+            np.testing.assert_array_equal(ca_er.grade_mean[m], ca_is.grade_mean[m])
+
+    def test_all_density_values_non_negative(self, config):
+        ca = build_config_arrays(config)
+        assert np.all(ca.density_mean >= 0)
+        assert np.all(ca.density_std >= 0)
+        assert np.all(ca.density_min >= 0)
+        assert np.all(ca.density_max >= 0)
+
+    def test_all_recoverability_in_range(self, config):
+        ca = build_config_arrays(config)
+        for material in SCORED_MATERIALS:
+            assert np.all(ca.recoverability[material] >= 0.0)
+            assert np.all(ca.recoverability[material] <= 1.0)
 
 
 # ---- load_config tests ------------------------------------------------------
@@ -259,7 +381,7 @@ class TestScoreAsteroid:
             "composite_score", "estimated_mass_kg", "grade_estimate",
             "target_material", "unit_value", "accessibility",
             "confidence", "spin_modifier", "thermal_depletion_factor",
-            "score_mode", "material_contributions",
+            "jwst_water_boost", "score_mode", "material_contributions",
         }
         assert required_keys == set(result.keys())
 

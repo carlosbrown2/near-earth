@@ -21,6 +21,7 @@ Usage:
 """
 
 import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import deal
@@ -93,6 +94,152 @@ _JWST_WATER_BOOST = 3.0   # multiplicative boost to water grade
 
 # Fallback density for unknown taxonomy classes
 _FALLBACK_DENSITY = {"mean": 2.0, "std": 1.0, "min": 0.5, "max": 5.0}
+
+# Number of taxonomy classes
+_N_CLASSES = len(MAHLKE_CLASSES)
+
+# Class name → index mapping for array construction
+_CLASS_TO_IDX = {c: i for i, c in enumerate(MAHLKE_CLASSES)}
+
+
+@dataclass(frozen=True)
+class ConfigArrays:
+    """Pre-built numpy arrays from YAML config for vectorized MC lookups.
+
+    All arrays are shape ``(17,)`` indexed by Mahlke class index.
+    Missing class entries are filled with zeros (or fallback for density).
+    """
+
+    # Density priors — shape (17,) each
+    density_mean: np.ndarray
+    density_std: np.ndarray
+    density_min: np.ndarray
+    density_max: np.ndarray
+
+    # Grade arrays — {material: {stat: ndarray(17,)}}
+    grade_mean: dict = field(default_factory=dict)
+    grade_std: dict = field(default_factory=dict)
+    grade_min: dict = field(default_factory=dict)
+    grade_max: dict = field(default_factory=dict)
+
+    # Unit conversion factors — {material: float}
+    # Converts grade unit → mass fraction (ppm→1e-6, wt_pct→0.01, else 1.0)
+    unit_factors: dict = field(default_factory=dict)
+
+    # Recoverability — {material: ndarray(17,)}
+    recoverability: dict = field(default_factory=dict)
+
+
+def _unit_to_factor(unit: str) -> float:
+    """Convert a unit string to its mass-fraction conversion factor."""
+    if unit == "ppm":
+        return 1e-6
+    elif unit == "wt_pct":
+        return 0.01
+    return 1.0
+
+
+def _dist_to_arrays(classes_dict, fallback=None):
+    """Convert a ``{class_name: {mean, std, min, max}}`` dict to four (17,) arrays.
+
+    Parameters
+    ----------
+    classes_dict : dict
+        Mapping from taxonomy class names to distribution dicts.
+    fallback : dict or None
+        If provided, fill missing classes with this distribution.
+        If None, fill with zeros.
+
+    Returns
+    -------
+    tuple of (mean, std, min, max) np.ndarray, each shape (17,).
+    """
+    means = np.zeros(_N_CLASSES, dtype=np.float64)
+    stds = np.zeros(_N_CLASSES, dtype=np.float64)
+    mins = np.zeros(_N_CLASSES, dtype=np.float64)
+    maxs = np.zeros(_N_CLASSES, dtype=np.float64)
+
+    for cls_name, dist in classes_dict.items():
+        if cls_name not in _CLASS_TO_IDX:
+            continue
+        idx = _CLASS_TO_IDX[cls_name]
+        means[idx] = dist["mean"]
+        stds[idx] = dist["std"]
+        mins[idx] = dist["min"]
+        maxs[idx] = dist["max"]
+
+    if fallback is not None:
+        for i in range(_N_CLASSES):
+            cls = MAHLKE_CLASSES[i]
+            if cls not in classes_dict:
+                means[i] = fallback["mean"]
+                stds[i] = fallback["std"]
+                mins[i] = fallback["min"]
+                maxs[i] = fallback["max"]
+
+    return means, stds, mins, maxs
+
+
+def build_config_arrays(config: dict, mode: ScoringMode = "earth_return") -> ConfigArrays:
+    """Convert nested YAML config into flat numpy arrays for vectorized lookups.
+
+    Parameters
+    ----------
+    config : dict
+        Parsed YAML config from :func:`load_config`.
+    mode : str
+        ``'earth_return'`` or ``'in_space'`` — selects material unit values.
+
+    Returns
+    -------
+    ConfigArrays
+        Dataclass with pre-built ``(17,)`` arrays.
+    """
+    # --- Density ---
+    density_classes = config["density_priors"]["classes"]
+    d_mean, d_std, d_min, d_max = _dist_to_arrays(density_classes, fallback=_FALLBACK_DENSITY)
+
+    # --- Grades per material ---
+    grade_estimates = config.get("grade_estimates", {})
+    g_mean: dict[str, np.ndarray] = {}
+    g_std: dict[str, np.ndarray] = {}
+    g_min: dict[str, np.ndarray] = {}
+    g_max: dict[str, np.ndarray] = {}
+    u_factors: dict[str, float] = {}
+
+    for material in SCORED_MATERIALS:
+        mat_cfg = grade_estimates.get(material, {})
+        mat_classes = mat_cfg.get("classes", {})
+        m, s, mn, mx = _dist_to_arrays(mat_classes)  # zeros for missing
+        g_mean[material] = m
+        g_std[material] = s
+        g_min[material] = mn
+        g_max[material] = mx
+        u_factors[material] = _unit_to_factor(mat_cfg.get("unit", "wt_pct"))
+
+    # --- Recoverability ---
+    recover_cfg = config.get("recoverability_defaults", DEFAULT_RECOVERABILITY)
+    recover_arrays: dict[str, np.ndarray] = {}
+    for material in SCORED_MATERIALS:
+        arr = np.zeros(_N_CLASSES, dtype=np.float64)
+        mat_recover = recover_cfg.get(material, {})
+        for cls_name, factor in mat_recover.items():
+            if cls_name in _CLASS_TO_IDX:
+                arr[_CLASS_TO_IDX[cls_name]] = factor
+        recover_arrays[material] = arr
+
+    return ConfigArrays(
+        density_mean=d_mean,
+        density_std=d_std,
+        density_min=d_min,
+        density_max=d_max,
+        grade_mean=g_mean,
+        grade_std=g_std,
+        grade_min=g_min,
+        grade_max=g_max,
+        unit_factors=u_factors,
+        recoverability=recover_arrays,
+    )
 
 
 def load_config(config_path=None):
