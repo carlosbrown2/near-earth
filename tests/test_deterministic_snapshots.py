@@ -10,10 +10,19 @@ then update the inline dicts below.  Do NOT update snapshots to make a failing
 test pass without understanding WHY the output changed.
 """
 
+import hashlib
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from prospector.db import get_connection, init_schema
+from prospector.scoring.config_schema import (
+    CONFIG_CHECKSUMS,
+    ConfigDriftError,
+    validate_all_configs,
+    validate_config_checksum,
+)
 from prospector.scoring.evoi import compute_evoi, rank_all
 from prospector.scoring.granvik_prior import MAHLKE_CLASSES, taxonomy_prior
 from prospector.scoring.scorer import load_config, score_all, score_asteroid
@@ -336,3 +345,51 @@ class TestFullPipelineReplay:
             assert a.asteroid_id == b.asteroid_id
             assert a.best_evoi == b.best_evoi
             assert a.current_score_mean == b.current_score_mean
+
+
+# ---------------------------------------------------------------------------
+# 6. Config checksum gate: detect unauthorized YAML modifications
+# ---------------------------------------------------------------------------
+
+_SCORING_DIR = Path(__file__).resolve().parent.parent / "scoring"
+
+
+class TestConfigChecksumGate:
+    """Independent verification that scoring YAML files match approved checksums."""
+
+    def test_all_configs_pass_validation(self):
+        """validate_all_configs() succeeds on the current scoring/ directory."""
+        validate_all_configs()
+
+    @pytest.mark.parametrize("filename", list(CONFIG_CHECKSUMS.keys()))
+    def test_individual_checksum_matches(self, filename):
+        """Each config file's SHA-256 independently matches CONFIG_CHECKSUMS."""
+        path = _SCORING_DIR / filename
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        expected = CONFIG_CHECKSUMS[filename]
+        assert actual == expected, (
+            f"{filename} checksum mismatch!\n"
+            f"  Expected: {expected}\n"
+            f"  Actual:   {actual}\n"
+            f"If this is intentional, update CONFIG_CHECKSUMS in "
+            f"prospector/scoring/config_schema.py."
+        )
+
+    def test_drift_detected_on_tampered_file(self, tmp_path):
+        """ConfigDriftError raised when file content differs from checksum."""
+        fake = tmp_path / "grade_density_priors.yaml"
+        fake.write_text("tampered: true\n")
+        with pytest.raises(ConfigDriftError, match="Config drift detected"):
+            validate_config_checksum(fake)
+
+    def test_unknown_config_raises_key_error(self, tmp_path):
+        """KeyError raised for files not in CONFIG_CHECKSUMS."""
+        unknown = tmp_path / "unknown.yaml"
+        unknown.write_text("x: 1\n")
+        with pytest.raises(KeyError, match="No approved checksum"):
+            validate_config_checksum(unknown)
+
+    def test_missing_file_raises_file_not_found(self, tmp_path):
+        """FileNotFoundError raised when a config file is missing."""
+        with pytest.raises(FileNotFoundError, match="Required scoring config"):
+            validate_all_configs(scoring_dir=tmp_path)

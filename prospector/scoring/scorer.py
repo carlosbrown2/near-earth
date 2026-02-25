@@ -28,6 +28,7 @@ import numpy as np
 import yaml
 
 from prospector.schemas import ScoringMode, ScoringResult
+from prospector.scoring.config_schema import validate_config_checksum
 from prospector.scoring.granvik_prior import MAHLKE_CLASSES, taxonomy_prior
 
 # Default config path
@@ -109,6 +110,8 @@ def load_config(config_path=None):
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
+    config_path = Path(config_path)
+    validate_config_checksum(config_path)
     with open(config_path) as f:
         return yaml.safe_load(f)
 

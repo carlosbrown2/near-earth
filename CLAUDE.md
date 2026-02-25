@@ -97,6 +97,7 @@ After schema-design completes, sbdb-ingest, neowise-ingest, validate-classy, and
 - Density priors: **Carry (2012)** — porosity matters for mass estimates
 - Scoring config values: All as distributions `{mean, std, min, max}` for Monte Carlo sampling
 - CNN model (Korda 2023): Only valid for S*-complex silicate spectra — enforce domain checks
+- **Scoring config changes require a dedicated bead** — all 3 YAML files in `scoring/` are locked by SHA-256 checksums in `prospector/scoring/config_schema.py`. Modifying a YAML without updating the checksum raises `ConfigDriftError` and breaks the build immediately.
 
 ## Conventions
 
@@ -127,3 +128,14 @@ def estimate_mass_kg(diameter_km: float, density_gcm3: float) -> float:
 - Use `deal.post` for output invariants (range bounds, finiteness)
 - Add `deal.cases(func, count=N)` in `tests/test_properties.py` to auto-generate tests from contracts
 - Contracts are active in tests, can be disabled in production via `deal.disable(permanent=True)`
+
+### Config Checksum Gate
+
+Scoring YAML files in `scoring/` are locked by SHA-256 checksums. To modify a config:
+
+1. Make your changes to the YAML file
+2. Compute new hash: `shasum -a 256 scoring/<filename>.yaml`
+3. Update `CONFIG_CHECKSUMS` in `prospector/scoring/config_schema.py`
+4. This must be done in a dedicated bead — never as a side-effect of another task
+
+The gate validates checksums in `load_config()` at runtime and independently in `test_deterministic_snapshots.py`.

@@ -3,6 +3,7 @@ Project: Asteroid Mining Prospector
 Started: 2026-02-23
 
 ## Codebase Patterns
+- Config checksum gate: Scoring YAMLs in `scoring/` are locked by SHA-256 hashes in `prospector/scoring/config_schema.py:CONFIG_CHECKSUMS`. `load_config()` validates on every call. To modify a YAML: update the file, run `shasum -a 256 scoring/<file>.yaml`, update `CONFIG_CHECKSUMS`, and do it in a dedicated bead.
 - Design by Contract: `import deal` — use `@deal.pre` for input domain, `@deal.post` for output invariants. Add `deal.cases(func, count=N)` in `tests/test_properties.py` for auto-generated tests. Contracts active in tests, disable in production with `deal.disable(permanent=True)`.
 - Pipeline CLI: `python -m prospector --stages ingest spectral scoring output --data-dir data/ --mode earth_return`. Use `run_pipeline()` programmatically.
 - FastAPI testing: Create `sqlite3.connect(":memory:", check_same_thread=False)` for test DB. Override `get_db` dependency: `app.dependency_overrides[get_db] = lambda: conn`. Use `TestClient(app)` from `fastapi.testclient`.
@@ -840,4 +841,27 @@ Started: 2026-02-23
   - Contracts are active by default — use `deal.disable(permanent=True)` for production zero-overhead
   - deal reduced mypy errors by 6 (type annotations on contracted functions trigger analysis of previously-untyped code)
   - Zero-diameter asteroid is a valid edge case for estimate_mass_kg (returns 0.0) — use `>=0` not `>0`
+---
+
+## 2026-02-24 — near-earth-kux: Config checksum gate for scoring YAML drift detection
+- Implemented SHA-256 checksum validation for all 3 scoring YAML config files
+- Created `prospector/scoring/config_schema.py` with:
+  - `CONFIG_CHECKSUMS` dict mapping filenames to approved SHA-256 hashes
+  - `ConfigDriftError` exception class
+  - `validate_config_checksum()` and `validate_all_configs()` functions
+  - Pydantic schemas (`DistributionWithSource`, `DensityPriors`, `GradeSection`, `GradeDensityConfig`) requiring `source` citation fields on all distribution entries
+- Integrated checksum validation into `scorer.py:load_config()` — validates on every config load
+- Added 5 tests to `test_deterministic_snapshots.py::TestConfigChecksumGate`:
+  - `test_all_configs_pass_validation` — all 3 YAMLs match approved hashes
+  - `test_individual_checksum_matches` — parametrized per-file independent hash check
+  - `test_drift_detected_on_tampered_file` — ConfigDriftError on modified content
+  - `test_unknown_config_raises_key_error` — rejects unknown config filenames
+  - `test_missing_file_raises_file_not_found` — catches missing configs
+- Updated CLAUDE.md with config checksum gate pattern and critical constraint
+- Files changed: prospector/scoring/config_schema.py (new), prospector/scoring/scorer.py, tests/test_deterministic_snapshots.py, CLAUDE.md, progress.txt
+- **Learnings for future iterations:**
+  - Scoring YAMLs are now locked — any modification requires updating CONFIG_CHECKSUMS in a dedicated bead
+  - `load_config()` validates checksum on every call, so all downstream consumers (scorer, EVOI) get protection automatically
+  - mutmut 3.x has incompatible CLI with the `mutmut-gate.sh` script (uses `--paths-to-mutate` which was removed); mutmut 2.5.x works
+  - Pydantic `DistributionWithSource` schema enforces citations at parse time, not just at test time
 ---
