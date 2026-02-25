@@ -21,6 +21,8 @@ import sqlite3
 import numpy as np
 from scipy.optimize import minimize_scalar
 
+from prospector.schemas import BandAnalysisResult
+
 logger = logging.getLogger(__name__)
 
 # Silicate taxonomy classes eligible for band analysis
@@ -161,7 +163,9 @@ def compute_band_area(wl, cr_refl, left_wl, right_wl):
     if mask.sum() < 3:
         return None
 
-    area = float(np.trapz(1.0 - cr_refl[mask], wl[mask]))
+    # np.trapezoid added in NumPy 2.0; np.trapz deprecated but works in 1.x
+    _trapz = getattr(np, "trapezoid", np.trapz)
+    area = float(_trapz(1.0 - cr_refl[mask], wl[mask]))
     return area if area > 0 else None
 
 
@@ -344,7 +348,7 @@ def analyze_spectrum(wl, refl, semi_major_axis=None):
     elif gaffey is not None:
         calibration = "gaffey1993_zone"
 
-    return {
+    result = {
         "band1_center": bic_corr,
         "band2_center": biic_corr,
         "bar": bar,
@@ -354,6 +358,8 @@ def analyze_spectrum(wl, refl, semi_major_axis=None):
         "gaffey_subtype": gaffey,
         "calibration": calibration,
     }
+    BandAnalysisResult.model_validate(result)
+    return result
 
 
 def analyze_asteroid(asteroid_id, conn):
