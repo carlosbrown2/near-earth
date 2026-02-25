@@ -925,3 +925,20 @@ Started: 2026-02-23
   - 5-material inner loop is acceptable — vectorizing across materials would require 3D arrays for marginal gain
   - `ca.unit_factors[material]` is equivalent to `_grade_to_fraction()` — multiply instead of divide
 ---
+
+## 2026-02-25 — near-earth-ve4: Per-asteroid SeedSequence seeding in score_all
+- Replaced shared `rng = default_rng(42)` with per-asteroid `SeedSequence(42, spawn_key=(asteroid_id,))`
+- Each asteroid's score is now deterministic and independent of other asteroids in DB
+- Added `ORDER BY a.asteroid_id` to the scoring query for deterministic row ordering
+- Built ConfigArrays once before the loop and pass via `_config_arrays` kwarg to `score_asteroid`
+- Added `_config_arrays=None` kwarg to `score_asteroid` — skips `build_config_arrays` rebuild when provided
+- New test: `test_score_independence_of_extra_asteroid` — inserting asteroid ID=0 doesn't change existing scores
+- Re-captured all pipeline replay snapshot values in `test_deterministic_snapshots.py`
+- Files changed: `prospector/scoring/scorer.py`, `tests/test_deterministic_snapshots.py`
+- All 1454 tests pass
+- **Learnings for future iterations:**
+  - `SeedSequence(42).spawn(N)` is index-dependent — spawn(5)[0] == spawn(6)[0] but row indices shift when new asteroids are inserted
+  - `SeedSequence(42, spawn_key=(asteroid_id,))` gives true DB-independence — seed derived from asteroid_id, not row position
+  - `_config_arrays` kwarg avoids rebuilding ConfigArrays per asteroid in score_all — O(1) instead of O(N) YAML-to-array conversions
+  - EVOI ranking is not affected by score_all changes (separate code path with its own RNG)
+---

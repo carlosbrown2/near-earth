@@ -263,18 +263,18 @@ class TestFullPipelineReplay:
     ]
 
     # Expected score_all ranking (descending composite_score), seed=42, n=500
-    EXPECTED_SCORE_RANKING = [3, 5, 1, 2, 4]
+    EXPECTED_SCORE_RANKING = [5, 3, 1, 2, 4]
 
     # Expected EVOI ranking (descending best_evoi), seed=42, n=200
     EXPECTED_EVOI_RANKING = [3, 5, 1, 2, 4]
 
     # Expected composite scores from score_all (seed=42, n=500)
     EXPECTED_SCORES = {
-        3: 30392417192.00567,
-        5: 29936106967.55466,
-        1: 7281096991.540525,
-        2: 1136458961.971805,
-        4: 369371308.5993084,
+        5: 32916970149.588493,
+        3: 26929273110.463852,
+        1: 11085321019.316961,
+        2: 685784821.069058,
+        4: 242011380.83538982,
     }
 
     @pytest.fixture
@@ -345,6 +345,66 @@ class TestFullPipelineReplay:
             assert a.asteroid_id == b.asteroid_id
             assert a.best_evoi == b.best_evoi
             assert a.current_score_mean == b.current_score_mean
+
+    def test_score_independence_of_extra_asteroid(self):
+        """Adding an extra asteroid must not change existing scores (SeedSequence)."""
+        # Score original 5 NEOs
+        conn1 = get_connection(":memory:")
+        for aid, name, neo, a, e, i, moid, diam in self.NEOS:
+            conn1.execute(
+                "INSERT INTO asteroids (asteroid_id, name, neo) VALUES (?, ?, ?)",
+                (aid, name, neo),
+            )
+            conn1.execute(
+                "INSERT INTO orbits (asteroid_id, a, e, i, moid, diameter) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, a, e, i, moid, diam),
+            )
+        conn1.commit()
+        score_all(conn1, n_samples=500, mode="earth_return")
+        original_scores = dict(
+            conn1.execute(
+                "SELECT asteroid_id, composite_score FROM scores"
+            ).fetchall()
+        )
+
+        # Score 5 NEOs + 1 extra asteroid inserted between existing IDs
+        conn2 = get_connection(":memory:")
+        for aid, name, neo, a, e, i, moid, diam in self.NEOS:
+            conn2.execute(
+                "INSERT INTO asteroids (asteroid_id, name, neo) VALUES (?, ?, ?)",
+                (aid, name, neo),
+            )
+            conn2.execute(
+                "INSERT INTO orbits (asteroid_id, a, e, i, moid, diameter) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, a, e, i, moid, diam),
+            )
+        # Extra asteroid with low ID (inserted BEFORE existing ones in ORDER BY)
+        # to verify SeedSequence independence even when row order shifts.
+        conn2.execute(
+            "INSERT INTO asteroids (asteroid_id, name, neo) VALUES (?, ?, ?)",
+            (0, "Zeta", 1),
+        )
+        conn2.execute(
+            "INSERT INTO orbits (asteroid_id, a, e, i, moid, diameter) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (0, 1.8, 0.4, 12.0, 0.08, 1.5),
+        )
+        conn2.commit()
+        score_all(conn2, n_samples=500, mode="earth_return")
+        expanded_scores = dict(
+            conn2.execute(
+                "SELECT asteroid_id, composite_score FROM scores"
+            ).fetchall()
+        )
+
+        # Original 5 scores must be bit-identical
+        for aid in original_scores:
+            assert expanded_scores[aid] == original_scores[aid], (
+                f"Score for asteroid {aid} changed when extra asteroid added: "
+                f"{original_scores[aid]!r} → {expanded_scores[aid]!r}"
+            )
 
 
 # ---------------------------------------------------------------------------

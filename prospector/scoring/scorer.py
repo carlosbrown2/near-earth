@@ -459,6 +459,7 @@ def score_asteroid(
     is_binary_suspect=None,
     q_au=None,
     jwst_water_confirmed=None,
+    _config_arrays=None,
 ):
     """Monte Carlo composite mining score for a single asteroid.
 
@@ -531,7 +532,7 @@ def score_asteroid(
     jwst_boost = _JWST_WATER_BOOST if jwst_water_confirmed else 1.0
 
     # Config arrays for vectorized MC lookups
-    ca = build_config_arrays(config, mode)
+    ca = _config_arrays if _config_arrays is not None else build_config_arrays(config, mode)
     materials = [m for m in SCORED_MATERIALS if m in material_values]
 
     # Build recoverability arrays from dict (supports caller overrides)
@@ -649,7 +650,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode: ScoringMode = "earth
         Number of asteroids scored.
     """
     config = load_config(config_path)
-    rng = np.random.default_rng(42)
+    ca = build_config_arrays(config, mode)
 
     rows = conn.execute(
         """
@@ -671,6 +672,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode: ScoringMode = "earth
           AND o.a IS NOT NULL
           AND o.e IS NOT NULL
           AND o.i IS NOT NULL
+        ORDER BY a.asteroid_id
         """
     ).fetchall()
 
@@ -678,6 +680,12 @@ def score_all(conn, config_path=None, n_samples=1000, mode: ScoringMode = "earth
     for row in rows:
         (asteroid_id, a, e_val, i_deg, moid, q_au, diameter_km, prob_blob,
          is_monolithic, is_binary_suspect, jwst_water_confirmed) = row
+
+        # Per-asteroid SeedSequence: derive RNG from asteroid_id so each
+        # score is deterministic and independent of other asteroids in DB.
+        rng = np.random.default_rng(
+            np.random.SeedSequence(42, spawn_key=(int(asteroid_id),))
+        )
 
         prob_vector = None
         if prob_blob is not None:
@@ -700,6 +708,7 @@ def score_all(conn, config_path=None, n_samples=1000, mode: ScoringMode = "earth
             is_binary_suspect=bool(is_binary_suspect) if is_binary_suspect is not None else None,
             q_au=q_au,
             jwst_water_confirmed=bool(jwst_water_confirmed) if jwst_water_confirmed is not None else None,
+            _config_arrays=ca,
         )
 
         conn.execute(
