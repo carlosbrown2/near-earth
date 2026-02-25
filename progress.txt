@@ -3,6 +3,7 @@ Project: Asteroid Mining Prospector
 Started: 2026-02-23
 
 ## Codebase Patterns
+- ConfigArrays for vectorized MC: `build_config_arrays(config, mode)` returns a frozen `ConfigArrays` dataclass with flat `np.ndarray(17,)` arrays for density, grade, recoverability — indexed by Mahlke class index. Use fancy indexing: `ca.density_mean[class_indices]` for vectorized lookups.
 - Config checksum gate: Scoring YAMLs in `scoring/` are locked by SHA-256 hashes in `prospector/scoring/config_schema.py:CONFIG_CHECKSUMS`. `load_config()` validates on every call. To modify a YAML: update the file, run `shasum -a 256 scoring/<file>.yaml`, update `CONFIG_CHECKSUMS`, and do it in a dedicated bead.
 - Design by Contract: `import deal` — use `@deal.pre` for input domain, `@deal.post` for output invariants. Add `deal.cases(func, count=N)` in `tests/test_properties.py` for auto-generated tests. Contracts active in tests, disable in production with `deal.disable(permanent=True)`.
 - Pipeline CLI: `python -m prospector --stages ingest spectral scoring output --data-dir data/ --mode earth_return`. Use `run_pipeline()` programmatically.
@@ -864,4 +865,47 @@ Started: 2026-02-23
   - `load_config()` validates checksum on every call, so all downstream consumers (scorer, EVOI) get protection automatically
   - mutmut 3.x has incompatible CLI with the `mutmut-gate.sh` script (uses `--paths-to-mutate` which was removed); mutmut 2.5.x works
   - Pydantic `DistributionWithSource` schema enforces citations at parse time, not just at test time
+---
+
+## 2026-02-24 — near-earth-bai: Pipeline stage Protocol with pre/postcondition checks
+- Defined `PipelineStage` Protocol in `prospector/pipeline.py` with 3 methods: `preconditions_met(db)`, `run(db)`, `postconditions_met(db)`
+- `StageResult` dataclass holds stage name + counts dict
+- `@runtime_checkable` enables `isinstance()` checks at test time
+- Implemented 4 concrete stage classes: `IngestStage`, `SpectralStage`, `ScoringStage`, `OutputStage`
+- Pre/postcondition checks query DB tables: `_table_has_rows()` helper wraps `SELECT 1 ... LIMIT 1`
+- Preconditions: Ingest=always True, Spectral=spectra table has rows, Scoring=asteroids+orbits, Output=scores
+- Postconditions: Ingest=asteroids table has rows, Spectral=taxonomy table, Scoring=scores table, Output=CSV file exists
+- 27 tests in `tests/test_pipeline_contracts.py`: protocol conformance (isinstance), preconditions, postconditions, StageResult, sequential integration
+- Files changed: `prospector/pipeline.py`, `tests/test_pipeline_contracts.py` (new)
+- **Learnings for future iterations:**
+  - `@runtime_checkable` + `Protocol` from `typing` — requires `name` attribute + 3 methods for isinstance
+  - `_table_has_rows()` uses try/except for nonexistent tables — returns False gracefully
+  - Schema column names: spectra table uses `survey` (not `source`), taxonomy uses `primary_class`/`primary_prob`/`classifier` (not `tax_class`/`prob`/`method`)
+  - Stage classes delegate to existing `_run_*()` functions — no duplicated orchestration logic
+  - `from prospector.pipeline import PipelineStage, StageResult, IngestStage, SpectralStage, ScoringStage, OutputStage`
+---
+
+## 2026-02-24 — near-earth-70u: Create project README
+- Created README.md with: project overview, installation, pipeline CLI usage, API/Docker instructions, test commands, project structure, key references, and GPL-3.0 license
+- Files changed: README.md (new)
+- Tests: all 1437 pass (no new tests needed — docs-only bead)
+- **Learnings for future iterations:**
+  - LICENSE file is GPL-3.0 despite pyproject.toml declaring MIT — used GPL-3.0 as canonical
+  - API uses factory pattern: `uvicorn prospector.api.app:create_app --factory`
+---
+
+## 2026-02-25 — near-earth-bw8: Config lookup arrays
+- Added `ConfigArrays` dataclass and `build_config_arrays()` to `prospector/scoring/scorer.py`
+- Converts nested YAML config dicts into flat `np.ndarray(17,)` indexed by Mahlke class index
+- Arrays: density (mean/std/min/max), grade per material (mean/std/min/max), unit_factors, recoverability
+- Missing class-material combos filled with zeros; density uses `_FALLBACK_DENSITY` for missing classes
+- Helper functions: `_unit_to_factor()` (ppm→1e-6, wt_pct→0.01), `_dist_to_arrays()` (dict→4 arrays)
+- 16 tests in `tests/test_scoring_scorer.py::TestConfigArrays`
+- Files changed: `prospector/scoring/scorer.py`, `tests/test_scoring_scorer.py`
+- **Learnings for future iterations:**
+  - `_CLASS_TO_IDX` dict maps class name → index for O(1) lookup during array construction
+  - ConfigArrays is frozen (immutable) — build once, pass to vectorized MC loop
+  - Recoverability defaults to `DEFAULT_RECOVERABILITY` dict when config lacks `recoverability_defaults`
+  - `from prospector.scoring.scorer import ConfigArrays, build_config_arrays`
+  - Downstream vectorization bead (near-earth-181) should use these arrays with fancy indexing: `density_mean[class_indices]`
 ---
