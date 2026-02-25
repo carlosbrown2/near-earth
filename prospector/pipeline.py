@@ -14,8 +14,9 @@ import argparse
 import logging
 import sqlite3
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Protocol, Sequence, runtime_checkable
 
 from prospector.db import get_connection
 from prospector.schemas import ScoringMode
@@ -23,6 +24,137 @@ from prospector.schemas import ScoringMode
 logger = logging.getLogger(__name__)
 
 ALL_STAGES = ("ingest", "spectral", "scoring", "output")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Stage Protocol
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StageResult:
+    """Result of a pipeline stage execution."""
+
+    stage: str
+    counts: dict[str, int] = field(default_factory=dict)
+
+
+@runtime_checkable
+class PipelineStage(Protocol):
+    """Runtime-checkable protocol for pipeline stages.
+
+    Each stage must declare preconditions (what the DB must contain before
+    running), a run method that performs the work, and postconditions (what
+    the DB must contain after running).
+    """
+
+    name: str
+
+    def preconditions_met(self, db: sqlite3.Connection) -> bool:
+        """Check whether this stage's prerequisites are satisfied."""
+        ...
+
+    def run(self, db: sqlite3.Connection) -> StageResult:
+        """Execute the stage, returning counts of records processed."""
+        ...
+
+    def postconditions_met(self, db: sqlite3.Connection) -> bool:
+        """Verify the stage produced the expected artefacts."""
+        ...
+
+
+def _table_has_rows(conn: sqlite3.Connection, table: str) -> bool:
+    """Return True if *table* exists and has at least one row."""
+    try:
+        row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608
+        return row is not None
+    except sqlite3.OperationalError:
+        return False
+
+
+class IngestStage:
+    """Ingest raw data files into the database."""
+
+    name: str = "ingest"
+
+    def __init__(self, data_dir: Path) -> None:
+        self._data_dir = data_dir
+
+    def preconditions_met(self, db: sqlite3.Connection) -> bool:
+        # Ingest is the first stage — no DB prerequisites.
+        return True
+
+    def run(self, db: sqlite3.Connection) -> StageResult:
+        counts = _run_ingest(db, self._data_dir)
+        return StageResult(stage=self.name, counts=counts)
+
+    def postconditions_met(self, db: sqlite3.Connection) -> bool:
+        return _table_has_rows(db, "asteroids")
+
+
+class SpectralStage:
+    """Run spectral analysis: preprocess → classify → band analysis."""
+
+    name: str = "spectral"
+
+    def preconditions_met(self, db: sqlite3.Connection) -> bool:
+        return _table_has_rows(db, "spectra")
+
+    def run(self, db: sqlite3.Connection) -> StageResult:
+        counts = _run_spectral(db)
+        return StageResult(stage=self.name, counts=counts)
+
+    def postconditions_met(self, db: sqlite3.Connection) -> bool:
+        return _table_has_rows(db, "taxonomy")
+
+
+class ScoringStage:
+    """Run Monte Carlo scoring."""
+
+    name: str = "scoring"
+
+    def __init__(
+        self,
+        mode: ScoringMode = "earth_return",
+        n_samples: int = 1000,
+    ) -> None:
+        self._mode = mode
+        self._n_samples = n_samples
+
+    def preconditions_met(self, db: sqlite3.Connection) -> bool:
+        return _table_has_rows(db, "asteroids") and _table_has_rows(db, "orbits")
+
+    def run(self, db: sqlite3.Connection) -> StageResult:
+        counts = _run_scoring(db, mode=self._mode, n_samples=self._n_samples)
+        return StageResult(stage=self.name, counts=counts)
+
+    def postconditions_met(self, db: sqlite3.Connection) -> bool:
+        return _table_has_rows(db, "scores")
+
+
+class OutputStage:
+    """Generate ranked output CSV."""
+
+    name: str = "output"
+
+    def __init__(
+        self,
+        mode: ScoringMode = "earth_return",
+        output_path: str | None = None,
+    ) -> None:
+        self._mode = mode
+        self._output_path = output_path
+
+    def preconditions_met(self, db: sqlite3.Connection) -> bool:
+        return _table_has_rows(db, "scores")
+
+    def run(self, db: sqlite3.Connection) -> StageResult:
+        counts = _run_output(db, mode=self._mode, output_path=self._output_path)
+        return StageResult(stage=self.name, counts=counts)
+
+    def postconditions_met(self, db: sqlite3.Connection) -> bool:
+        path = self._output_path or f"prospector_results_{self._mode}.csv"
+        return Path(path).exists()
 
 # Data source directories and file patterns for auto-discovery
 _INGEST_SOURCES = {
