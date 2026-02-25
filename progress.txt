@@ -777,3 +777,15 @@ Started: 2026-02-23
   - Mock `rank_all` at module level (`prospector.api.routers.evoi.rank_all`) — requires module-level import, not local import
   - EVOI endpoint is the most expensive API endpoint; consider adding a pre-computed evoi table in future
 ---
+
+## 2026-02-24 — near-earth-iz7: Docker deployment
+- Created `Dockerfile` (Python 3.12-slim, installs `.[api]`, uvicorn CMD, healthcheck)
+- Created `docker-compose.yml` (data volume mount, env vars, port 8000)
+- 12 structural validation tests in `tests/test_docker.py`
+---
+
+## 2026-02-24 — near-earth-0k5: Fix np.trapz deprecation
+- Used `getattr(np, "trapezoid", np.trapz)` for forward/backward compat
+- NumPy 1.26.4 installed (pre-2.0), so np.trapezoid not yet available
+- Eliminated 25 DeprecationWarning from test suite
+---
