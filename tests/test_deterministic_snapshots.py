@@ -211,14 +211,14 @@ class TestComputeEVOISnapshot:
     """compute_evoi(d=1.0, a=1.5, e=0.3, i=10.0, moid=0.05, seed=42, n=200)."""
 
     EXPECTED = {
-        "score_mean": 10366826446.17176,
-        "score_std": 34964618747.57021,
-        "evoi_vnir": 1706791754.0797462,
-        "evoi_vis": 24820061931.03283,
-        "evoi_radar": 19048681444.827774,
-        "evoi_albedo": 17821535809.225956,
-        "best_observation": "vis_spectroscopy",
-        "best_evoi": 24820061931.03283,
+        "score_mean": 5477865661.34358,
+        "score_std": 22169467315.151566,
+        "evoi_vnir": 0.0,
+        "evoi_vis": 11820826734.784859,
+        "evoi_radar": 15749272041.660503,
+        "evoi_albedo": 0.0,
+        "best_observation": "radar",
+        "best_evoi": 15749272041.660503,
     }
 
     def test_exact_output(self, config):
@@ -266,7 +266,7 @@ class TestFullPipelineReplay:
     EXPECTED_SCORE_RANKING = [5, 3, 1, 2, 4]
 
     # Expected EVOI ranking (descending best_evoi), seed=42, n=200
-    EXPECTED_EVOI_RANKING = [3, 5, 1, 2, 4]
+    EXPECTED_EVOI_RANKING = [5, 3, 1, 2, 4]
 
     # Expected composite scores from score_all (seed=42, n=500)
     EXPECTED_SCORES = {

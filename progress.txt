@@ -942,3 +942,20 @@ Started: 2026-02-23
   - `_config_arrays` kwarg avoids rebuilding ConfigArrays per asteroid in score_all — O(1) instead of O(N) YAML-to-array conversions
   - EVOI ranking is not affected by score_all changes (separate code path with its own RNG)
 ---
+
+## 2026-02-25 — near-earth-w0l: Vectorize EVOI _score_distribution + extract shared MC kernel
+- Extracted `_vectorized_mc_samples()` kernel from `score_asteroid` into standalone function
+- Kernel returns `(sample_values, mass_samples, material_totals)` before global multipliers
+- `score_asteroid` calls kernel and applies confidence × accessibility × spin_modifier
+- `_score_distribution` (evoi.py) refactored from 60-line duplicate loop to 5-line kernel call
+- Removed wasteful `score_asteroid()` call in old `_score_distribution` that consumed RNG without using result
+- Applied SeedSequence(42, spawn_key=(asteroid_id,)) in `rank_all` with ORDER BY a.asteroid_id
+- Re-captured all EVOI snapshot values in `test_deterministic_snapshots.py`
+- Files changed: `prospector/scoring/scorer.py`, `prospector/scoring/evoi.py`, `tests/test_deterministic_snapshots.py`
+- All 1454 tests pass
+- **Learnings for future iterations:**
+  - `_vectorized_mc_samples` is the shared MC kernel — import from `prospector.scoring.scorer`
+  - Old `_score_distribution` called `score_asteroid()` then duplicated its own loop — wasteful pattern now fixed
+  - Kernel takes `thermal_depl`/`jwst_boost` with defaults of 1.0 — EVOI doesn't use thermal/water modifiers
+  - `_config_arrays` kwarg avoids rebuilding ConfigArrays per call — pass to kernel when pre-built
+---

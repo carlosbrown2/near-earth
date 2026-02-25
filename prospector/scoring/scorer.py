@@ -439,6 +439,118 @@ def _get_recoverability(config):
     return config.get("recoverability_defaults", DEFAULT_RECOVERABILITY)
 
 
+def _vectorized_mc_samples(
+    diameter_km,
+    prob_vector,
+    config,
+    mode,
+    n_samples,
+    rng,
+    material_values=None,
+    recoverability=None,
+    _config_arrays=None,
+    thermal_depl=1.0,
+    jwst_boost=1.0,
+):
+    """Vectorized Monte Carlo material-value sampling kernel.
+
+    Draws taxonomy class indices, samples density and grade distributions,
+    computes mass and per-material values.  Returns raw per-sample totals
+    BEFORE global multipliers (confidence, accessibility, spin).
+
+    Parameters
+    ----------
+    diameter_km : float
+    prob_vector : numpy.ndarray
+        17-element taxonomy probability vector.
+    config : dict
+        Loaded YAML config.
+    mode : ScoringMode
+    n_samples : int
+    rng : numpy.random.Generator
+    material_values : dict, optional
+    recoverability : dict, optional
+    _config_arrays : ConfigArrays, optional
+    thermal_depl : float
+        Water thermal depletion factor [0, 1].
+    jwst_boost : float
+        JWST water confirmation boost multiplier.
+
+    Returns
+    -------
+    sample_values : numpy.ndarray, shape (n_samples,)
+        Per-sample total material value (before global multipliers).
+    mass_samples : numpy.ndarray, shape (n_samples,)
+        Per-sample mass estimates in kg.
+    material_totals : dict[str, float]
+        Sum of value per material across all samples.
+    """
+    if material_values is None:
+        material_values = _get_material_values(config, mode)
+    if recoverability is None:
+        recoverability = _get_recoverability(config)
+
+    ca = _config_arrays if _config_arrays is not None else build_config_arrays(config, mode)
+    materials = [m for m in SCORED_MATERIALS if m in material_values]
+
+    # Build recoverability arrays from dict (supports caller overrides)
+    recover_arrays: dict[str, np.ndarray] = {}
+    for material in materials:
+        arr = np.zeros(_N_CLASSES, dtype=np.float64)
+        mat_recover = recoverability.get(material, {})
+        for cls_name, factor in mat_recover.items():
+            if cls_name in _CLASS_TO_IDX:
+                arr[_CLASS_TO_IDX[cls_name]] = factor
+        recover_arrays[material] = arr
+
+    # Normalise prob vector for sampling
+    pv = np.asarray(prob_vector, dtype=np.float64).copy()
+    pv_sum = pv.sum()
+    if pv_sum > 0:
+        pv /= pv_sum
+    else:
+        pv = np.ones(_N_CLASSES) / _N_CLASSES
+
+    # 1. Draw all taxonomy class indices at once
+    class_indices = rng.choice(_N_CLASSES, size=n_samples, p=pv)
+
+    # 2. Vectorized density sampling
+    density = np.clip(
+        rng.normal(ca.density_mean[class_indices], ca.density_std[class_indices]),
+        ca.density_min[class_indices],
+        ca.density_max[class_indices],
+    )
+
+    # 3. Vectorized mass computation
+    radius_m = diameter_km * 1000.0 / 2.0
+    density_kgm3 = density * 1000.0
+    mass_samples = (4.0 / 3.0) * math.pi * radius_m ** 3 * density_kgm3
+
+    # 4. Per-material grade accumulation
+    sample_values = np.zeros(n_samples)
+    material_totals: dict[str, float] = {}
+    for material in materials:
+        grade_frac = np.clip(
+            rng.normal(
+                ca.grade_mean[material][class_indices],
+                ca.grade_std[material][class_indices],
+            ),
+            ca.grade_min[material][class_indices],
+            ca.grade_max[material][class_indices],
+        ) * ca.unit_factors[material]
+
+        if material == "water":
+            grade_frac = grade_frac * (thermal_depl * jwst_boost)
+
+        recover = recover_arrays[material][class_indices]
+        uv = material_values.get(material, 0.0)
+        value = mass_samples * grade_frac * recover * uv
+        sample_values += value
+        material_totals[material] = float(np.sum(value))
+
+    return sample_values, mass_samples, material_totals
+
+
 @deal.pre(lambda diameter_km, *_, **__: diameter_km > 0, message="diameter_km must be positive for scoring")
 @deal.post(lambda result: result["composite_score"] >= 0, message="composite_score must be non-negative")
 @deal.post(lambda result: math.isfinite(result["composite_score"]), message="composite_score must be finite")
@@ -531,82 +643,38 @@ def score_asteroid(
     # JWST 6μm water confirmation boost
     jwst_boost = _JWST_WATER_BOOST if jwst_water_confirmed else 1.0
 
-    # Config arrays for vectorized MC lookups
+    # Config arrays for best_grade computation
     ca = _config_arrays if _config_arrays is not None else build_config_arrays(config, mode)
-    materials = [m for m in SCORED_MATERIALS if m in material_values]
 
-    # Build recoverability arrays from dict (supports caller overrides)
-    recover_arrays: dict[str, np.ndarray] = {}
-    for material in materials:
-        arr = np.zeros(_N_CLASSES, dtype=np.float64)
-        mat_recover = recoverability.get(material, {})
-        for cls_name, factor in mat_recover.items():
-            if cls_name in _CLASS_TO_IDX:
-                arr[_CLASS_TO_IDX[cls_name]] = factor
-        recover_arrays[material] = arr
-
-    # Normalise prob vector for sampling
-    pv = np.asarray(prob_vector, dtype=np.float64).copy()
-    pv_sum = pv.sum()
-    if pv_sum > 0:
-        pv /= pv_sum
-    else:
-        pv = np.ones(_N_CLASSES) / _N_CLASSES
-
-    # --- Vectorized MC sampling ---
-    # 1. Draw all taxonomy class indices at once
-    class_indices = rng.choice(_N_CLASSES, size=n_samples, p=pv)
-
-    # 2. Vectorized density sampling via ConfigArrays
-    density = np.clip(
-        rng.normal(ca.density_mean[class_indices], ca.density_std[class_indices]),
-        ca.density_min[class_indices],
-        ca.density_max[class_indices],
+    # Vectorized MC kernel
+    sample_values, mass_samples, material_totals = _vectorized_mc_samples(
+        diameter_km, prob_vector, config, mode, n_samples, rng,
+        material_values=material_values, recoverability=recoverability,
+        _config_arrays=ca,
+        thermal_depl=thermal_depl, jwst_boost=jwst_boost,
     )
 
-    # 3. Vectorized mass computation
-    radius_m = diameter_km * 1000.0 / 2.0
-    density_kgm3 = density * 1000.0
-    mass_samples = (4.0 / 3.0) * math.pi * radius_m ** 3 * density_kgm3
-
-    # 4. Per-material grade accumulation (5-material loop)
-    sample_scores = np.zeros(n_samples)
-    material_totals: dict[str, float] = {}
-    for material in materials:
-        grade_frac = np.clip(
-            rng.normal(
-                ca.grade_mean[material][class_indices],
-                ca.grade_std[material][class_indices],
-            ),
-            ca.grade_min[material][class_indices],
-            ca.grade_max[material][class_indices],
-        ) * ca.unit_factors[material]
-
-        # Water-specific modifiers
-        if material == "water":
-            grade_frac = grade_frac * (thermal_depl * jwst_boost)
-
-        recover = recover_arrays[material][class_indices]
-        uv = material_values.get(material, 0.0)
-        value = mass_samples * grade_frac * recover * uv
-        sample_scores += value
-        material_totals[material] = float(np.sum(value))
-
-    # 5. Apply confidence, accessibility, and spin modifier
-    sample_scores *= confidence * accessibility * spin_modifier
+    # Apply global multipliers
+    sample_scores = sample_values * confidence * accessibility * spin_modifier
 
     # Aggregate
     composite_score = float(np.mean(sample_scores))
     estimated_mass_kg = float(np.mean(mass_samples))
 
     # Normalise material totals to per-sample means
-    material_contributions = {m: material_totals.get(m, 0.0) / n_samples for m in materials}
+    material_contributions = {m: v / n_samples for m, v in material_totals.items()}
 
     # Dominant target material
     best_material = max(material_contributions, key=lambda k: material_contributions[k])
     best_unit_value = material_values.get(best_material, 0.0)
 
     # Expected grade for dominant material (weighted by taxonomy distribution)
+    pv = np.asarray(prob_vector, dtype=np.float64).copy()
+    pv_sum = pv.sum()
+    if pv_sum > 0:
+        pv /= pv_sum
+    else:
+        pv = np.ones(_N_CLASSES) / _N_CLASSES
     best_grade = float(np.sum(
         pv * ca.grade_mean[best_material] * ca.unit_factors[best_material]
     ))

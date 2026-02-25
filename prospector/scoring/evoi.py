@@ -33,6 +33,7 @@ import numpy as np
 from prospector.schemas import EVOIResultSchema, ObservationType, ScoringMode
 from prospector.scoring.granvik_prior import MAHLKE_CLASSES, taxonomy_prior
 from prospector.scoring.scorer import (
+    _vectorized_mc_samples,
     compute_accessibility,
     compute_confidence,
     load_config,
@@ -255,76 +256,13 @@ def _score_distribution(
     rng: np.random.Generator,
 ) -> np.ndarray:
     """Run MC scoring and return the array of per-sample composite scores."""
-    result = score_asteroid(
-        diameter_km=diameter_km,
-        a=a,
-        e=e,
-        i_deg=i_deg,
-        moid=moid,
-        prob_vector=prob_vector,
-        config=config,
-        n_samples=n_samples,
-        mode=mode,
-        rng=rng,
-    )
-    # score_asteroid returns the mean — we need the distribution.
-    # Re-run with individual samples to get variance.
-    # For efficiency, run a single batch and collect per-sample scores.
-    scores = np.zeros(n_samples)
     accessibility = compute_accessibility(moid, a, e)
     confidence = compute_confidence(prob_vector)
 
-    pv = np.asarray(prob_vector, dtype=np.float64).copy()
-    pv_sum = pv.sum()
-    if pv_sum > 0:
-        pv /= pv_sum
-    else:
-        pv = np.ones(len(MAHLKE_CLASSES)) / len(MAHLKE_CLASSES)
-
-    from prospector.scoring.scorer import (
-        SCORED_MATERIALS,
-        _FALLBACK_DENSITY,
-        _grade_to_fraction,
-        estimate_mass_kg,
-        sample_from_dist,
+    sample_values, _, _ = _vectorized_mc_samples(
+        diameter_km, prob_vector, config, mode, n_samples, rng,
     )
-
-    density_priors = config["density_priors"]["classes"]
-    grade_estimates = config["grade_estimates"]
-    material_values_cfg = config.get("material_values", {})
-    from prospector.scoring.scorer import DEFAULT_MATERIAL_VALUES, DEFAULT_RECOVERABILITY
-
-    mat_values = material_values_cfg.get(mode, DEFAULT_MATERIAL_VALUES.get(mode, {}))
-    recoverability = config.get("recoverability_defaults", DEFAULT_RECOVERABILITY)
-    materials = [m for m in SCORED_MATERIALS if m in mat_values]
-
-    for i in range(n_samples):
-        class_idx = rng.choice(len(MAHLKE_CLASSES), p=pv)
-        tax_class = MAHLKE_CLASSES[class_idx]
-
-        if tax_class in density_priors:
-            density = sample_from_dist(density_priors[tax_class], rng)
-        else:
-            density = sample_from_dist(_FALLBACK_DENSITY, rng)
-
-        mass_kg = estimate_mass_kg(diameter_km, density)
-        total_value = 0.0
-        for material in materials:
-            mat_cfg = grade_estimates.get(material, {})
-            mat_classes = mat_cfg.get("classes", {})
-            mat_unit = mat_cfg.get("unit", "wt_pct")
-            if tax_class in mat_classes:
-                grade_raw = sample_from_dist(mat_classes[tax_class], rng)
-                grade_frac = _grade_to_fraction(grade_raw, mat_unit)
-            else:
-                grade_frac = 0.0
-            recover = recoverability.get(material, {}).get(tax_class, 0.0)
-            uv = mat_values.get(material, 0.0)
-            total_value += mass_kg * grade_frac * recover * uv
-
-        scores[i] = total_value * confidence * accessibility
-
-    return scores
+    return sample_values * confidence * accessibility
 
 
 def compute_evoi(
@@ -572,7 +510,6 @@ def rank_all(
         Sorted by best_evoi descending (highest information value first).
     """
     config = load_config(config_path)
-    rng = np.random.default_rng(42)
 
     # Find asteroids without spectral taxonomy
     query = """
@@ -587,7 +524,7 @@ def rank_all(
     """
     if neo_only:
         query += " AND a.neo = 1"
-    query += " ORDER BY COALESCE(o.diameter, pp.diameter_km) DESC"
+    query += " ORDER BY a.asteroid_id"
     if max_asteroids is not None:
         query += f" LIMIT {int(max_asteroids)}"
 
@@ -595,6 +532,10 @@ def rank_all(
 
     results = []
     for (asteroid_id,) in rows:
+        # Per-asteroid SeedSequence for DB-independence
+        rng = np.random.default_rng(
+            np.random.SeedSequence(42, spawn_key=(int(asteroid_id),))
+        )
         evoi_result = compute_evoi_for_asteroid(
             asteroid_id, conn, config=config, mode=mode,
             n_samples=n_samples, rng=rng,
