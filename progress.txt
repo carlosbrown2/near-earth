@@ -767,3 +767,13 @@ Started: 2026-02-23
   - SQLite LIKE is case-insensitive by default for ASCII; use COLLATE NOCASE for explicit guarantees
   - COALESCE(o.diameter, pp.diameter_km) handles dual diameter sources in WHERE and SELECT
 ---
+
+## 2026-02-24 — near-earth-4ca: EVOI observation priority endpoint
+- Created `prospector/api/routers/evoi.py` — GET /v1/evoi
+- Computes EVOI on-the-fly via `rank_all()`, limited to 50 asteroids/request
+- Gracefully returns empty results on computation failure
+- Files: `prospector/api/routers/evoi.py` (new), `tests/test_api_evoi.py` (9 tests)
+- **Learnings for future iterations:**
+  - Mock `rank_all` at module level (`prospector.api.routers.evoi.rank_all`) — requires module-level import, not local import
+  - EVOI endpoint is the most expensive API endpoint; consider adding a pre-computed evoi table in future
+---
