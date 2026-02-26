@@ -1050,3 +1050,17 @@ Started: 2026-02-23
   - pytest.importorskip("z3") pattern for optional-dep tests
   - The intended zone geometry vs. Python cascade distinction is key — the zones can overlap in their raw conditions, but the cascade ordering resolves this
 ---
+
+## 2026-02-26 — near-earth-zmj: Fuzz testing for spectral preprocessing pipeline
+- Added Atheris to pyproject.toml dev dependencies
+- Created `tests/fuzz_preprocessing.py`: fuzz harness for resample(), normalize(), mask_telluric(), estimate_snr()
+- Includes pure-Python FuzzedDataProvider fallback for environments where Atheris can't build (macOS ARM)
+- Created `tests/test_fuzz_preprocessing.py`: 121 pytest tests (seed corpus + parametrized random + 10k bulk)
+- Standalone 60s run: 131,500 iterations, zero crashes
+- Files changed: pyproject.toml, tests/fuzz_preprocessing.py, tests/test_fuzz_preprocessing.py
+- **Learnings for future iterations:**
+  - Atheris has no pre-built wheels for macOS ARM / Python 3.12 — always provide a pure-Python fallback
+  - Pure-Python FuzzedDataProvider pattern: consume bytes sequentially (ConsumeIntInRange, ConsumeBool, ConsumeFloat, ConsumeBytes)
+  - numpy overflow warnings are expected with random float inputs — not bugs
+  - Pre-existing flaky test: test_phase_curve.py::TestPhaseCurveProperties::test_round_trip_recovery (tolerance borderline)
+---
