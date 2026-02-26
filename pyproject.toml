@@ -26,6 +26,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "hypothesis>=6.0",
+    "hypothesis-crosshair>=0.0.27",
     "mypy>=1.0",
     "mutmut>=2.4",
     "deal>=4.24",
@@ -34,6 +35,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["crosshair: CrossHair SMT-backed tests (run nightly, not on every commit)"]
 
 [tool.mypy]
 python_version = "3.10"
