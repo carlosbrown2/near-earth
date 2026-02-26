@@ -1000,3 +1000,15 @@ Started: 2026-02-23
   - `deadline=None` needed for compute-heavy PBTs; `max_examples=100-300` gives good coverage
   - For monotonicity tests, `assume(abs(x1 - x2) > threshold)` avoids flaky near-equal comparisons
 ---
+
+## 2026-02-26 — near-earth-3nn: PBT for phase curve fitting round-trip properties
+- Added 8 @given-decorated Hypothesis PBT tests to `tests/test_phase_curve.py`
+- Properties tested: zero-phase identity, magnitude monotonicity (at knots), phase integral formula, geometric albedo positivity, basis function bounds [0,1], basis function monotonicity (at knots), round-trip parameter recovery, G1+G2 constraint enforcement
+- Files changed: `tests/test_phase_curve.py`
+- All 1482 tests pass (44 in test_phase_curve.py: 36 existing + 8 new PBT)
+- **Learnings for future iterations:**
+  - Natural cubic splines are NOT guaranteed monotone between knots — Phi_1/Phi_2/Phi_3 have ~1e-5 oscillations between tabulated grid points. Test monotonicity at knot points only, or use a tolerance.
+  - H, G1, G2 phase curve fitting has inherent parameter degeneracy — G1 and G2 trade off. Individual recovery tolerance ~0.12; phase integral (linear combination) is better constrained (~0.06).
+  - Use `assume(G1 + G2 <= 0.90)` in round-trip PBT to avoid boundary degenerate cases where G3→0 causes ill-conditioning.
+  - For extreme (G1, G2) like (0, 1) or (1, 0), the model is dominated by a single basis function and the cubic spline non-monotonicity becomes visible in the forward model magnitude.
+---
