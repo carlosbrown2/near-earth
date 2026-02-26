@@ -30,6 +30,7 @@ dev = [
     "mypy>=1.0",
     "mutmut>=2.4",
     "deal>=4.24",
+    "z3-solver>=4.12",
 ]
 
 [tool.pytest.ini_options]
@@ -49,6 +50,7 @@ plugins = ["pydantic.mypy"]
 module = [
     "astroquery.*",
     "scipy.*",
+    "z3.*",
 ]
 ignore_missing_imports = true
 
