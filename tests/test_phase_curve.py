@@ -4,6 +4,8 @@ import math
 
 import numpy as np
 import pytest
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
 from prospector.db import get_connection, init_schema
 from prospector.spectral.phase_curve import (
@@ -338,3 +340,147 @@ class TestFitAll:
         fit_all(conn)
         rows = conn.execute("SELECT COUNT(*) FROM phase_curve").fetchone()
         assert rows[0] == 1  # still just Eros
+
+
+# --- Property-based tests (Hypothesis) ---
+
+
+class TestPhaseCurveProperties:
+    """Hypothesis property-based tests for the H, G1, G2 phase curve module."""
+
+    @given(
+        H=st.floats(min_value=5.0, max_value=30.0),
+        G1=st.floats(min_value=0.0, max_value=1.0),
+        G2=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_zero_phase_equals_H(self, H, G1, G2):
+        """h_g1g2_model(0°, H, G1, G2) == H for all valid (H, G1, G2).
+
+        At zero phase angle all basis functions equal 1.0, so total flux
+        equals G1 + G2 + G3 = 1.0 and magnitude reduces to H.
+        """
+        assume(G1 + G2 <= 1.0)
+        mag = h_g1g2_model(np.array([0.0]), H, G1, G2)
+        assert mag[0] == pytest.approx(H, abs=1e-6)
+
+    @given(
+        H=st.floats(min_value=5.0, max_value=30.0),
+        G1=st.floats(min_value=0.0, max_value=1.0),
+        G2=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_magnitude_monotonic_at_knots(self, H, G1, G2):
+        """Magnitude monotonically non-decreasing at tabulated knot points.
+
+        At the spline knots the basis function values are exact, so the
+        flux = G1*Phi_1 + G2*Phi_2 + G3*Phi_3 is guaranteed non-increasing
+        and magnitude is non-decreasing.  Between knots, cubic spline
+        interpolation can introduce small oscillations.
+        """
+        assume(G1 + G2 <= 1.0)
+        # Use tabulated knot points 0-90 deg where basis functions are non-trivial
+        alpha_knots = np.array([0.0, 0.3, 1.0, 2.0, 4.0, 8.0, 12.0, 20.0, 30.0, 60.0, 90.0])
+        mag = h_g1g2_model(alpha_knots, H, G1, G2)
+        assert np.all(np.diff(mag) >= -1e-10)
+
+    @given(
+        G1=st.floats(min_value=0.0, max_value=1.0),
+        G2=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_phase_integral_formula_consistency(self, G1, G2):
+        """phase_integral output matches 0.009082 + 0.4061*G1 + 0.8768*G2."""
+        assume(G1 + G2 <= 1.0)
+        q = phase_integral(G1, G2)
+        expected = 0.009082 + 0.4061 * G1 + 0.8768 * G2
+        assert q == pytest.approx(expected, abs=1e-10)
+
+    @given(
+        H=st.floats(min_value=5.0, max_value=30.0),
+        diameter_km=st.floats(min_value=0.001, max_value=1000.0),
+    )
+    def test_geometric_albedo_positive(self, H, diameter_km):
+        """geometric_albedo always positive for positive diameter and finite H."""
+        pv = geometric_albedo(H, diameter_km)
+        assert pv > 0
+
+    @given(alpha=st.floats(min_value=0.0, max_value=150.0))
+    def test_basis_functions_bounded(self, alpha):
+        """Basis functions Phi_1, Phi_2, Phi_3 always in [0, 1] after clipping."""
+        alpha_arr = np.array([alpha])
+        for phi_fn in (_phi1, _phi2, _phi3):
+            val = phi_fn(alpha_arr)[0]
+            assert 0.0 <= val <= 1.0
+
+    @given(
+        H=st.floats(min_value=5.0, max_value=30.0),
+        G1=st.floats(min_value=0.0, max_value=1.0),
+        G2=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_basis_functions_non_increasing_at_knots(self, H, G1, G2):
+        """Basis functions are exactly non-increasing at tabulated knot points.
+
+        Between knots, cubic spline interpolation can introduce oscillations
+        of order 1e-5, but at the knots the values are exact.
+        """
+        assume(G1 + G2 <= 1.0)
+        alpha_knots = np.array([0.0, 0.3, 1.0, 2.0, 4.0, 8.0, 12.0, 20.0, 30.0, 60.0, 90.0])
+        for phi_fn in (_phi1, _phi2, _phi3):
+            vals = phi_fn(alpha_knots)
+            assert np.all(np.diff(vals) <= 1e-10)
+
+    @given(
+        H=st.floats(min_value=10.0, max_value=25.0),
+        G1=st.floats(min_value=0.05, max_value=0.85),
+        G2=st.floats(min_value=0.05, max_value=0.85),
+        seed=st.integers(min_value=0, max_value=2**32 - 1),
+    )
+    @settings(max_examples=50, deadline=None)
+    def test_round_trip_recovery(self, H, G1, G2, seed):
+        """Synthesize low-noise observations then fit to recover (H, G1, G2).
+
+        Uses SNR > 100 (noise=0.005) and 30 phase angle points spanning
+        0.5 to 100 degrees to ensure well-conditioned recovery.
+        """
+        assume(G1 + G2 <= 0.90)
+        rng = np.random.default_rng(seed)
+        alpha = np.concatenate([
+            rng.uniform(0.5, 5.0, size=8),
+            rng.uniform(5.0, 100.0, size=22),
+        ])
+        alpha.sort()
+        mag_true = h_g1g2_model(alpha, H, G1, G2)
+        mag_obs = mag_true + rng.normal(0, 0.005, size=len(alpha))
+
+        result = fit_phase_curve(alpha, mag_obs)
+        assert result is not None
+        # H is well-constrained; G1/G2 have inherent degeneracy
+        assert abs(result['H'] - H) < 0.15
+        assert abs(result['G1'] - G1) < 0.12
+        assert abs(result['G2'] - G2) < 0.12
+        # Phase integral combines G1/G2 and is better constrained
+        expected_q = 0.009082 + 0.4061 * G1 + 0.8768 * G2
+        assert abs(result['phase_integral'] - expected_q) < 0.06
+
+    @given(
+        H=st.floats(min_value=10.0, max_value=25.0),
+        G1=st.floats(min_value=0.05, max_value=0.90),
+        G2=st.floats(min_value=0.05, max_value=0.90),
+        seed=st.integers(min_value=0, max_value=2**32 - 1),
+    )
+    @settings(max_examples=50, deadline=None)
+    def test_g1_g2_constraint_enforced_in_fit(self, H, G1, G2, seed):
+        """G1 + G2 <= 1 is always enforced in fit output, even with noisy data."""
+        assume(G1 + G2 <= 0.95)
+        rng = np.random.default_rng(seed)
+        alpha = np.concatenate([
+            rng.uniform(0.5, 5.0, size=5),
+            rng.uniform(5.0, 100.0, size=20),
+        ])
+        alpha.sort()
+        mag_true = h_g1g2_model(alpha, H, G1, G2)
+        mag_obs = mag_true + rng.normal(0, 0.03, size=len(alpha))
+
+        result = fit_phase_curve(alpha, mag_obs)
+        assert result is not None
+        assert result['G1'] >= 0.0
+        assert result['G2'] >= 0.0
+        assert result['G1'] + result['G2'] <= 1.0 + 1e-10
