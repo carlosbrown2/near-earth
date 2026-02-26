@@ -981,3 +981,22 @@ Started: 2026-02-23
   - Functions using `np.sqrt`, `np.clip`, or any numpy/scipy are NOT SMT-amenable — CrossHair falls back to concrete execution, negating the SMT benefit
   - `max_examples=20` is sufficient for CrossHair — SMT explores paths exhaustively, not statistically
 ---
+
+## 2026-02-26 — near-earth-fah: PBT for Lambert solver orbital mechanics invariants
+- Added `TestLambertProperties` class in `tests/test_ephemeris_lambert.py` with 7 `@given`-decorated property tests
+- Properties tested:
+  1. Vis-viva theorem: v² = μ(2/r - 1/a) for random (a, e, M)
+  2. Kepler equation round-trip: E - e·sin(E) = M for random (M, e)
+  3. Stumpff C(z) continuity at Taylor/exact branch boundary near z=0
+  4. Stumpff S(z) continuity at Taylor/exact branch boundary near z=0
+  5. departure_dv monotonicity: higher v_inf → higher Δv
+  6. solve_lambert energy conservation: ε₁ = ε₂ at both endpoints
+  7. earth_state radius always in [0.97, 1.03] AU for ±50 year range
+- Files changed: `tests/test_ephemeris_lambert.py`
+- All 54 tests pass (47 existing + 7 new PBT)
+- **Learnings for future iterations:**
+  - Stumpff continuity is NOT symmetry — C(z) is not symmetric around z=0. Test branch agreement, not C(ε)≈C(-ε)
+  - Lambert solver returns None for degenerate geometry — use `assume(result is not None)` in PBT
+  - `deadline=None` needed for compute-heavy PBTs; `max_examples=100-300` gives good coverage
+  - For monotonicity tests, `assume(abs(x1 - x2) > threshold)` avoids flaky near-equal comparisons
+---
