@@ -1012,3 +1012,24 @@ Started: 2026-02-23
   - Use `assume(G1 + G2 <= 0.90)` in round-trip PBT to avoid boundary degenerate cases where G3→0 causes ill-conditioning.
   - For extreme (G1, G2) like (0, 1) or (1, 0), the model is dominated by a single basis function and the cubic spline non-monotonicity becomes visible in the forward model magnitude.
 ---
+
+## 2026-02-26 — near-earth-c24: PBT for Hapke model physical invariants
+- Added TestHapkeProperties class in `tests/test_spectral_hapke_model.py` with 8 @given-decorated Hypothesis PBT tests
+- Properties tested:
+  1. compute_ssa output bounded [0, 1] for random endmembers and grain sizes
+  2. mix_ssa output bounded [0, 1] for random area fractions summing to 1
+  3. mix_ssa is convex combination: bounded by min/max of component SSAs
+  4. apply_smfe never increases SSA (darkening only) for random SMFe fractions
+  5. forward_model output always non-negative and finite for random parameter vectors
+  6. _unpack_params invariants: fractions sum to 1.0, grain sizes within [MIN, MAX], SMFe within bounds
+  7. ssa_to_reflectance monotonically increasing with SSA
+  8. apply_smfe output bounded [0, 1] for any SMFe value
+- Per bead notes, skipped grain-size monotonicity property (non-monotonic for grains near wavelength scale)
+- Files changed: `tests/test_spectral_hapke_model.py`
+- All 8 new PBT tests pass; 1489 total tests pass (1 pre-existing failure in test_phase_curve unrelated)
+- **Learnings for future iterations:**
+  - Hapke SSA-grain size relationship is non-monotonic near wavelength scale — don't assume bigger grain = lower SSA
+  - `hypothesis.extra.numpy.arrays` with `.map(np.sort).map(np.unique).filter(len >= N)` generates sorted unique wavelength grids
+  - For convex combination testing, filter out near-zero fractions (< 1e-12) to avoid numerical noise in bounds checking
+  - Dirichlet-like fraction strategy: generate positive floats, filter sum > 0, then normalize
+---
