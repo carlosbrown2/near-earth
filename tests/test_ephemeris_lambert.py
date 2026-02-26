@@ -2,6 +2,8 @@
 
 import numpy as np
 import pytest
+from hypothesis import given, settings, assume
+from hypothesis import strategies as st
 
 from prospector.db import get_connection
 from prospector.ephemeris.lambert import (
@@ -519,3 +521,170 @@ class TestPhysicalSanity:
         # Apophis is one of the most accessible NEOs
         assert len(windows) > 0
         assert windows[0].dv_total_km_s < 15.0
+
+
+# ---------------------------------------------------------------------------
+# Property-based tests (Hypothesis)
+# ---------------------------------------------------------------------------
+
+class TestLambertProperties:
+    """Property-based tests for orbital mechanics invariants."""
+
+    @given(
+        a_au=st.floats(min_value=0.5, max_value=5.0),
+        e=st.floats(min_value=0.0, max_value=0.9),
+        M=st.floats(min_value=0.0, max_value=2.0 * np.pi),
+    )
+    @settings(max_examples=200, deadline=None)
+    def test_vis_viva_theorem(self, a_au, e, M):
+        """v² = μ(2/r - 1/a) must hold for all valid Keplerian elements."""
+        a_m = a_au * AU
+        r_vec, v_vec = keplerian_to_cartesian(a_m, e, 0.0, 0.0, 0.0, M)
+        r = np.linalg.norm(r_vec)
+        v = np.linalg.norm(v_vec)
+
+        v_visviva = np.sqrt(MU_SUN * (2.0 / r - 1.0 / a_m))
+        assert v == pytest.approx(v_visviva, rel=1e-4), (
+            f"Vis-viva violated: v={v:.6e}, expected={v_visviva:.6e} "
+            f"(a={a_au} AU, e={e}, M={M})"
+        )
+
+    @given(
+        M=st.floats(min_value=-10.0 * np.pi, max_value=10.0 * np.pi),
+        e=st.floats(min_value=0.0, max_value=0.99),
+    )
+    @settings(max_examples=300, deadline=None)
+    def test_kepler_equation_round_trip(self, M, e):
+        """E - e·sin(E) must equal M for all (M, e) pairs."""
+        E = solve_kepler(M, e)
+        recovered_M = E - e * np.sin(E)
+        assert recovered_M == pytest.approx(M, abs=1e-10), (
+            f"Kepler round-trip failed: E={E}, e={e}, M={M}, "
+            f"E - e·sin(E)={recovered_M}"
+        )
+
+    @given(z=st.floats(min_value=-1e-5, max_value=1e-5))
+    @settings(max_examples=200, deadline=None)
+    def test_stumpff_c_continuity_at_zero(self, z):
+        """Taylor branch and exact branches of C(z) must agree at the transition boundary.
+
+        The implementation switches between Taylor series (|z|<1e-6) and exact
+        formulas. At the boundary, both branches must produce nearly identical
+        results. This tests continuity, NOT symmetry (C(z) is not symmetric).
+        """
+        # Evaluate at boundary points just inside each branch
+        z_taylor = np.clip(z, -9e-7, 9e-7)  # inside Taylor branch
+        c_taylor = stumpff_c(z_taylor)
+
+        # Also evaluate at a slightly larger magnitude to get the exact branch
+        if z >= 0:
+            z_exact = max(z, 2e-6)
+        else:
+            z_exact = min(z, -2e-6)
+        c_exact = stumpff_c(z_exact)
+
+        # Both should be close to 0.5 (the value at z=0)
+        assert c_taylor == pytest.approx(0.5, abs=1e-4), (
+            f"Taylor branch C({z_taylor}) = {c_taylor}, expected ~0.5"
+        )
+        assert c_exact == pytest.approx(0.5, abs=1e-3), (
+            f"Exact branch C({z_exact}) = {c_exact}, expected ~0.5"
+        )
+
+    @given(
+        v_inf1=st.floats(min_value=100.0, max_value=20000.0),
+        v_inf2=st.floats(min_value=100.0, max_value=20000.0),
+    )
+    @settings(max_examples=200, deadline=None)
+    def test_departure_dv_monotonicity(self, v_inf1, v_inf2):
+        """Higher v_inf must always require higher departure Δv."""
+        assume(abs(v_inf1 - v_inf2) > 1.0)  # avoid near-equal comparisons
+
+        dv1 = departure_dv(np.array([v_inf1, 0.0, 0.0]))
+        dv2 = departure_dv(np.array([v_inf2, 0.0, 0.0]))
+
+        if v_inf1 < v_inf2:
+            assert dv1 < dv2, (
+                f"Monotonicity violated: dv({v_inf1:.1f})={dv1:.1f} >= "
+                f"dv({v_inf2:.1f})={dv2:.1f}"
+            )
+        else:
+            assert dv1 > dv2
+
+    @given(
+        r1_au=st.floats(min_value=0.7, max_value=1.3),
+        r2_au=st.floats(min_value=0.8, max_value=2.5),
+        angle_deg=st.floats(min_value=20.0, max_value=160.0),
+        tof_days=st.floats(min_value=80.0, max_value=500.0),
+    )
+    @settings(max_examples=100, deadline=None)
+    def test_solve_lambert_energy_conservation(self, r1_au, r2_au, angle_deg, tof_days):
+        """Both endpoints of a Lambert solution must have the same orbital energy."""
+        r1_vec = np.array([r1_au * AU, 0.0, 0.0])
+        angle = np.radians(angle_deg)
+        r2_vec = np.array([
+            r2_au * AU * np.cos(angle),
+            r2_au * AU * np.sin(angle),
+            0.0,
+        ])
+        tof_sec = tof_days * DAY
+
+        result = solve_lambert(r1_vec, r2_vec, tof_sec)
+        assume(result is not None)
+        v1, v2 = result
+
+        # Both velocities must be finite
+        assume(np.all(np.isfinite(v1)) and np.all(np.isfinite(v2)))
+
+        # Specific orbital energy: ε = v²/2 - μ/r (must be the same at both ends)
+        eps1 = np.dot(v1, v1) / 2.0 - MU_SUN / np.linalg.norm(r1_vec)
+        eps2 = np.dot(v2, v2) / 2.0 - MU_SUN / np.linalg.norm(r2_vec)
+
+        assert eps1 == pytest.approx(eps2, rel=1e-3), (
+            f"Energy not conserved: ε1={eps1:.6e}, ε2={eps2:.6e} "
+            f"(r1={r1_au} AU, r2={r2_au} AU, θ={angle_deg}°, TOF={tof_days}d)"
+        )
+
+    @given(
+        dt_years=st.floats(min_value=-50.0, max_value=50.0),
+    )
+    @settings(max_examples=200, deadline=None)
+    def test_earth_state_radius_near_1au(self, dt_years):
+        """Earth's heliocentric distance must always be near 1 AU."""
+        jd = J2000 + dt_years * 365.25
+        r_vec, v_vec = earth_state(jd)
+        r_au = np.linalg.norm(r_vec) / AU
+
+        # Earth's orbit has e≈0.0167, so r ∈ [0.983, 1.017] AU
+        assert 0.97 < r_au < 1.03, (
+            f"Earth radius {r_au:.4f} AU outside [0.97, 1.03] at JD {jd:.1f}"
+        )
+
+        # Speed should always be near 29.78 km/s
+        v_km_s = np.linalg.norm(v_vec) / 1000.0
+        assert 28.5 < v_km_s < 31.0, (
+            f"Earth speed {v_km_s:.2f} km/s outside [28.5, 31.0] at JD {jd:.1f}"
+        )
+
+    @given(
+        z=st.floats(min_value=-1e-5, max_value=1e-5),
+    )
+    @settings(max_examples=200, deadline=None)
+    def test_stumpff_s_continuity_at_zero(self, z):
+        """Stumpff S(z) Taylor and exact branches must agree near z=0."""
+        z_taylor = np.clip(z, -9e-7, 9e-7)
+        s_taylor = stumpff_s(z_taylor)
+
+        if z >= 0:
+            z_exact = max(z, 2e-6)
+        else:
+            z_exact = min(z, -2e-6)
+        s_exact = stumpff_s(z_exact)
+
+        # Both should be close to 1/6 (the value at z=0)
+        assert s_taylor == pytest.approx(1.0 / 6.0, abs=1e-4), (
+            f"Taylor branch S({z_taylor}) = {s_taylor}, expected ~1/6"
+        )
+        assert s_exact == pytest.approx(1.0 / 6.0, abs=1e-3), (
+            f"Exact branch S({z_exact}) = {s_exact}, expected ~1/6"
+        )
