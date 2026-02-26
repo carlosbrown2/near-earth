@@ -1064,3 +1064,18 @@ Started: 2026-02-23
   - numpy overflow warnings are expected with random float inputs — not bugs
   - Pre-existing flaky test: test_phase_curve.py::TestPhaseCurveProperties::test_round_trip_recovery (tolerance borderline)
 ---
+
+## 2026-02-26 — near-earth-lhj: Fuzz testing for ingest parsers
+- Created `tests/fuzz_ingest.py`: 10 fuzz targets across sbdb, entity_resolver, mithneos
+  - sbdb: parse_full_name, spkid_to_asteroid_id, _safe_float, _flag_to_int
+  - entity_resolver: pack/unpack/normalize_designation, parse_mithneos_filename, resolve (no DB)
+  - mithneos: _read_spectrum_file (temp file approach)
+- Created `tests/test_fuzz_ingest.py`: 134 pytest tests (seed corpus + random + 5k bulk)
+- Standalone 60s run: 349,407 iterations, zero crashes
+- Files changed: tests/fuzz_ingest.py, tests/test_fuzz_ingest.py
+- **Learnings for future iterations:**
+  - DB-free functions are ideal fuzz targets — no setup, no teardown, fast iteration
+  - File-based fuzzing (mithneos) uses tempfile.NamedTemporaryFile → write bytes → parse → cleanup
+  - `object` type annotation for mixed-type fuzz variables satisfies mypy strict mode
+  - entity_resolver.resolve() works without DB (conn=None) for pure designation parsing paths
+---
