@@ -1033,3 +1033,20 @@ Started: 2026-02-23
   - For convex combination testing, filter out near-zero fractions (< 1e-12) to avoid numerical noise in bounds checking
   - Dirichlet-like fraction strategy: generate positive floats, filter sum > 0, then normalize
 ---
+
+## 2026-02-26 — near-earth-w3z: Z3 SMT proof of Gaffey subtype classification completeness
+- Formal Z3 verification (Real theory) of classify_gaffey_subtype() in spectral/band_analysis.py
+- 11 proof tests in tests/test_gaffey_z3_proof.py covering 4 categories:
+  1. Primary zone disjointness: all 21 zone pairs verified non-overlapping
+  2. Cascade coverage: total coverage + exactly-one assignment (10 cascade branches, each disjoint)
+  3. Gap characterization: 2 gap regions identified where primary zones don't tile the domain
+     - bic < 0.92, 0.10 <= bar < 0.40 → assigned S(III) by final else
+     - bic > 1.04, 0.80 <= bar <= 1.80 → assigned S(IV) by bar >= 0.80 fallback
+  4. Boundary consistency: clean seams at bar=0.80, bic=1.02, bar=1.20, bar=0.10, bar=1.80
+- Added z3-solver>=4.12 to pyproject.toml[dev], z3.* to mypy ignores
+- **Learnings for future iterations:**
+  - Z3 Real theory is ideal for continuous parameter space proofs — no floating-point rounding issues
+  - Cascade modeling: build effective conditions by accumulating Not(prior_cond) prefixes
+  - pytest.importorskip("z3") pattern for optional-dep tests
+  - The intended zone geometry vs. Python cascade distinction is key — the zones can overlap in their raw conditions, but the cascade ordering resolves this
+---
