@@ -959,3 +959,25 @@ Started: 2026-02-23
   - Kernel takes `thermal_depl`/`jwst_boost` with defaults of 1.0 — EVOI doesn't use thermal/water modifiers
   - `_config_arrays` kwarg avoids rebuilding ConfigArrays per call — pass to kernel when pre-built
 ---
+
+## 2026-02-26 — near-earth-uew: CrossHair SMT backend for existing Hypothesis tests
+- Added `hypothesis-crosshair>=0.0.27` to `pyproject.toml[dev]` dependencies
+- Created `tests/test_crosshair_scoring.py` with 13 CrossHair SMT-backed property tests
+- 7 pure-Python functions tested (no numpy/scipy internals):
+  - `estimate_mass_kg` — non-negativity, d³ scaling
+  - `compute_thermal_depletion_factor` — unit interval bounds, monotonicity
+  - `classify_gaffey_subtype` — always returns valid S(I)–S(VII) subtype
+  - `dunn_calibration` — ol_ratio bounded [0,1], fa non-negative
+  - `lindsay_bar_correction` — corrected BAR preserves sign
+  - `temperature_correct_band_centers` — round-trip recovery
+  - `compute_spin_modifier` — monolithic bonus, binary penalty, neutral default, priority
+- Registered `crosshair` pytest marker in `pyproject.toml` for nightly CI runs
+- Files changed: `pyproject.toml`, `tests/test_crosshair_scoring.py` (new)
+- **Learnings for future iterations:**
+  - CrossHair module is `hypothesis_crosshair_provider` (not `hypothesis_crosshair`) — auto-registers via entry point
+  - `@settings(backend='crosshair')` is all you need — no explicit import of CrossHair required
+  - z3-solver pip package ships arm64 dylib on macOS — if Python runs under Rosetta (x86_64), download the x86_64 wheel: `pip download z3-solver --platform macosx_12_0_x86_64 --python-version 3.12 --only-binary=:all:`
+  - Use `suppress_health_check=[HealthCheck.too_slow]` and `deadline=None` for CrossHair tests — SMT solving is slower than random sampling
+  - Functions using `np.sqrt`, `np.clip`, or any numpy/scipy are NOT SMT-amenable — CrossHair falls back to concrete execution, negating the SMT benefit
+  - `max_examples=20` is sufficient for CrossHair — SMT explores paths exhaustively, not statistically
+---
