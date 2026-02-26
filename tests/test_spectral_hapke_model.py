@@ -2,6 +2,9 @@
 
 import numpy as np
 import pytest
+from hypothesis import given, settings, assume
+from hypothesis import strategies as st
+from hypothesis.extra.numpy import arrays
 
 from prospector.db import get_connection
 from prospector.spectral.hapke_model import (
@@ -9,8 +12,10 @@ from prospector.spectral.hapke_model import (
     ENDMEMBER_NAMES,
     FE_NI_METAL,
     MAX_SMFE,
+    MIN_SMFE,
     MIN_GRAIN_UM,
     MAX_GRAIN_UM,
+    N_ENDMEMBERS,
     N_PARAMS,
     OLIVINE,
     PLAGIOCLASE,
@@ -533,3 +538,170 @@ class TestPhysicalSanity:
         r_met = forward_model(params_metal, wl)
         # Opaque metal → lower reflectance than transparent silicates
         assert np.mean(r_met) < np.mean(r_sil)
+
+
+# ---------------------------------------------------------------------------
+# Property-based tests (Hypothesis)
+# ---------------------------------------------------------------------------
+
+# Strategies for physical parameters
+_st_wavelengths = arrays(
+    np.float64,
+    st.integers(min_value=10, max_value=100),
+    elements=st.floats(min_value=0.35, max_value=2.55, allow_nan=False, allow_infinity=False),
+).map(lambda a: np.sort(np.unique(a))).filter(lambda a: len(a) >= 5)
+
+_st_grain_size = st.floats(min_value=MIN_GRAIN_UM, max_value=MAX_GRAIN_UM, allow_nan=False)
+_st_smfe = st.floats(min_value=0.0, max_value=MAX_SMFE, allow_nan=False)
+_st_endmember = st.sampled_from(DEFAULT_ENDMEMBERS)
+_st_ssa_val = st.floats(min_value=0.0, max_value=1.0, allow_nan=False)
+
+
+def _st_area_fractions(n: int = N_ENDMEMBERS) -> st.SearchStrategy[np.ndarray]:
+    """Generate n non-negative fractions summing to 1 (Dirichlet-like)."""
+    return arrays(
+        np.float64, n,
+        elements=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+    ).filter(lambda a: a.sum() > 0).map(lambda a: a / a.sum())
+
+
+def _st_param_vector() -> st.SearchStrategy[np.ndarray]:
+    """Generate a valid 10-element parameter vector for 5 endmembers."""
+    fracs = arrays(
+        np.float64, 4,
+        elements=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+    )
+    grain_sizes = arrays(
+        np.float64, 5,
+        elements=st.floats(min_value=MIN_GRAIN_UM, max_value=MAX_GRAIN_UM,
+                           allow_nan=False, allow_infinity=False),
+    )
+    smfe = st.floats(min_value=MIN_SMFE, max_value=MAX_SMFE,
+                     allow_nan=False, allow_infinity=False)
+    return st.tuples(fracs, grain_sizes, smfe).map(
+        lambda t: np.concatenate([t[0], t[1], [t[2]]])
+    )
+
+
+class TestHapkeProperties:
+    """Property-based tests for Hapke model physical invariants."""
+
+    @given(endmember=_st_endmember, grain_size=_st_grain_size)
+    @settings(max_examples=100, deadline=None)
+    def test_compute_ssa_bounded_01(self, endmember, grain_size):
+        """SSA must always be in [0, 1] for any endmember and grain size."""
+        wl = np.linspace(0.45, 2.50, 50)
+        w = compute_ssa(endmember, wl, grain_size)
+        assert np.all(w >= 0.0), f"SSA below 0: min={w.min()}"
+        assert np.all(w <= 1.0), f"SSA above 1: max={w.max()}"
+
+    @given(fracs=_st_area_fractions(), grain_sizes=arrays(
+        np.float64, N_ENDMEMBERS,
+        elements=st.floats(min_value=MIN_GRAIN_UM, max_value=MAX_GRAIN_UM,
+                           allow_nan=False, allow_infinity=False),
+    ))
+    @settings(max_examples=100, deadline=None)
+    def test_mix_ssa_bounded_01(self, fracs, grain_sizes):
+        """Mixed SSA must be in [0, 1] for any valid area fractions."""
+        wl = np.linspace(0.45, 2.50, 50)
+        w = mix_ssa(DEFAULT_ENDMEMBERS, fracs, wl, grain_sizes)
+        assert np.all(w >= 0.0), f"Mixed SSA below 0: min={w.min()}"
+        assert np.all(w <= 1.0), f"Mixed SSA above 1: max={w.max()}"
+
+    @given(fracs=_st_area_fractions(), grain_sizes=arrays(
+        np.float64, N_ENDMEMBERS,
+        elements=st.floats(min_value=MIN_GRAIN_UM, max_value=MAX_GRAIN_UM,
+                           allow_nan=False, allow_infinity=False),
+    ))
+    @settings(max_examples=80, deadline=None)
+    def test_mix_ssa_convex_combination(self, fracs, grain_sizes):
+        """Mixed SSA is bounded by min/max of individual component SSAs."""
+        wl = np.linspace(0.45, 2.50, 50)
+        individual = []
+        for em, frac, gs in zip(DEFAULT_ENDMEMBERS, fracs, grain_sizes):
+            if frac > 1e-12:
+                individual.append(compute_ssa(em, wl, gs))
+        assume(len(individual) >= 1)
+        w_min = np.min(individual, axis=0)
+        w_max = np.max(individual, axis=0)
+        w_mix = mix_ssa(DEFAULT_ENDMEMBERS, fracs, wl, grain_sizes)
+        assert np.all(w_mix >= w_min - 1e-10), (
+            f"Mixed SSA below component min: {(w_mix - w_min).min()}"
+        )
+        assert np.all(w_mix <= w_max + 1e-10), (
+            f"Mixed SSA above component max: {(w_mix - w_max).max()}"
+        )
+
+    @given(
+        smfe_frac=st.floats(min_value=1e-6, max_value=MAX_SMFE,
+                            allow_nan=False, allow_infinity=False),
+        endmember=_st_endmember,
+        grain_size=_st_grain_size,
+    )
+    @settings(max_examples=100, deadline=None)
+    def test_apply_smfe_never_increases_ssa(self, smfe_frac, endmember, grain_size):
+        """SMFe space weathering can only darken — never increase SSA."""
+        wl = np.linspace(0.45, 2.50, 50)
+        ssa = compute_ssa(endmember, wl, grain_size)
+        weathered = apply_smfe(ssa, wl, smfe_frac, n_host=endmember.n)
+        assert np.all(weathered <= ssa + 1e-12), (
+            f"SMFe increased SSA: max increase = {(weathered - ssa).max()}"
+        )
+
+    @given(params=_st_param_vector())
+    @settings(max_examples=100, deadline=None)
+    def test_forward_model_positive(self, params):
+        """Forward model reflectance must be non-negative for any valid params."""
+        wl = np.linspace(0.45, 2.50, 50)
+        refl = forward_model(params, wl)
+        assert np.all(refl >= 0.0), f"Negative reflectance: min={refl.min()}"
+        assert np.all(np.isfinite(refl)), "Non-finite reflectance"
+
+    @given(params=_st_param_vector())
+    @settings(max_examples=100, deadline=None)
+    def test_unpack_params_invariants(self, params):
+        """Unpacked fractions sum to 1; grain sizes within physical bounds."""
+        fracs, grain_sizes, smfe = _unpack_params(params)
+        assert fracs.sum() == pytest.approx(1.0, abs=1e-10), (
+            f"Fractions sum = {fracs.sum()}"
+        )
+        assert np.all(fracs >= 0.0), f"Negative fraction: {fracs.min()}"
+        assert np.all(grain_sizes >= MIN_GRAIN_UM), (
+            f"Grain below min: {grain_sizes.min()}"
+        )
+        assert np.all(grain_sizes <= MAX_GRAIN_UM), (
+            f"Grain above max: {grain_sizes.max()}"
+        )
+        assert MIN_SMFE <= smfe <= MAX_SMFE, f"SMFe out of bounds: {smfe}"
+
+    @given(
+        w1=_st_ssa_val, w2=_st_ssa_val,
+    )
+    @settings(max_examples=200, deadline=None)
+    def test_ssa_to_reflectance_monotonic(self, w1, w2):
+        """Higher SSA must yield higher or equal reflectance."""
+        assume(w1 != w2)
+        r1 = ssa_to_reflectance(np.array([w1]))
+        r2 = ssa_to_reflectance(np.array([w2]))
+        if w1 < w2:
+            assert r1[0] <= r2[0] + 1e-12, (
+                f"Not monotonic: SSA {w1:.4f}->{r1[0]:.6f}, {w2:.4f}->{r2[0]:.6f}"
+            )
+        else:
+            assert r2[0] <= r1[0] + 1e-12, (
+                f"Not monotonic: SSA {w2:.4f}->{r2[0]:.6f}, {w1:.4f}->{r1[0]:.6f}"
+            )
+
+    @given(
+        smfe_frac=_st_smfe,
+        endmember=_st_endmember,
+        grain_size=_st_grain_size,
+    )
+    @settings(max_examples=100, deadline=None)
+    def test_apply_smfe_bounded_01(self, smfe_frac, endmember, grain_size):
+        """Weathered SSA must remain in [0, 1]."""
+        wl = np.linspace(0.45, 2.50, 50)
+        ssa = compute_ssa(endmember, wl, grain_size)
+        weathered = apply_smfe(ssa, wl, smfe_frac, n_host=endmember.n)
+        assert np.all(weathered >= 0.0), f"Weathered SSA below 0: {weathered.min()}"
+        assert np.all(weathered <= 1.0), f"Weathered SSA above 1: {weathered.max()}"
